@@ -24,12 +24,12 @@ class Spoonfeed:
         if command == "new_task" or command == 'nt':
             comp_str = 'new_task ' + args[0] + ','
             if len(args) == 2:
-                comp_str += args[1]
+                comp_str += str(int(args[1])*self.unit)
             else:
                 comp_str += '-1'
             comp_str += ',' + str(time.time())
 
-        elif command == "remove" or command == 'r':
+        elif command == "remove":
             comp_str = "remove " + str(self.get_task_by_name_timeframe(args[0], time.time()).id)
 
         elif command == "check_off" or command == 'co':
@@ -47,7 +47,10 @@ class Spoonfeed:
             exit()
 
         elif command == "show" or command == 's':
-            self.show()
+            if len(args) == 1:
+                self.show(int(args[0]))
+            else:
+                self.show()
 
         elif command == "set_unit" or command == 'su':
             comp_str = "set_unit " + args[0]
@@ -97,9 +100,9 @@ class Spoonfeed:
                 return task
         return None
 
-    def show(self) -> None:
+    def show(self, from_time=0) -> None:
         for task in self.feed:
-            if task.reveal_time < time.time():
+            if task.reveal_time < time.time()+from_time*self.unit:
                 print(task.pretty())
 
     def remove(self, id: int):

@@ -214,19 +214,19 @@ def feed_act_on_computer_input():
 
 
 def feed_process_human_input():
-    try:
+    # try:
         f = Spoonfeed()
         assert f.process_human_input("nt my task")[:20] == "new_task my task,-1,"
         f.new_task("my_task")
-        assert f.process_human_input("r my_task") == "remove 0"
+        assert f.process_human_input("remove  my_task") == "remove 0"
         f.new_task("my other task")
         assert f.process_human_input("check_off my other task") == "remove 1"
         f.new_task("my third task")
         assert f.process_human_input("pft my third task,3")[:11] == "set_time 2,"
         assert f.process_human_input("su 3") == "set_unit 3"
         return True
-    except:
-        return False
+    # except:
+    #     return False
 
 
 def hood_log():
