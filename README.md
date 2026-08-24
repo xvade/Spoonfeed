@@ -23,8 +23,8 @@ Place `hero.m4a` in the project root to play it whenever a task is completed.
 Place calming images in the ignored `.images/` directory. For one minute after
 a check-off, press `D` once to choose whether to display a random image. The
 shortcut remains available even when focus changes as the completed row
-disappears. Any key closes the image window, which also closes automatically
-after one minute.
+disappears. Confirming displays an image only 20% of the time. Any key closes
+the image window, which also closes automatically after one minute.
 
 ## Migrate `old.db`
 

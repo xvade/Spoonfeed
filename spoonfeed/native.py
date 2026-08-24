@@ -500,7 +500,11 @@ class SpoonfeedWindow(QMainWindow):
             self.show_random_calming_image()
 
     def show_random_calming_image(self) -> None:
-        """Open a randomly selected usable image from the ignored .images folder."""
+        """With a 20% chance, open a random usable image from ``.images``."""
+        # Most confirmations intentionally return to the task list without an
+        # image, keeping this as an occasional rather than habitual reward.
+        if random.random() >= 0.2:
+            return
         if not CALMING_IMAGE_DIRECTORY.is_dir():
             QMessageBox.information(self, "No images found", "Add images to .images to use this feature.")
             return

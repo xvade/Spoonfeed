@@ -34,6 +34,7 @@
   after one minute. The app-level key route also works if focus changes as the
   completed row disappears. Closing an image clears its tracked window object,
   which prevents a prior viewer from blocking the next completion's `D` prompt.
+  Confirming the prompt displays an image with a 20% probability.
 
 ## Next work, in prompt order
 

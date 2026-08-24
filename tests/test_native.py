@@ -98,7 +98,10 @@ class NativeWindowTests(unittest.TestCase):
             self.assertTrue(image.save(str(image_path)))
 
             window = SpoonfeedWindow(Path(directory) / "tasks.db")
-            with patch("spoonfeed.native.CALMING_IMAGE_DIRECTORY", image_directory):
+            with (
+                patch("spoonfeed.native.CALMING_IMAGE_DIRECTORY", image_directory),
+                patch("spoonfeed.native.random.random", return_value=0.0),
+            ):
                 window.show_random_calming_image()
             viewer = window.calming_image_window
             self.assertIsNotNone(viewer)
@@ -115,6 +118,24 @@ class NativeWindowTests(unittest.TestCase):
             QTest.keyClick(window.as_of_input, Qt.Key.Key_D)
             self.application.processEvents()
             self.assertEqual(calls, ["offered"])
+            window.close()
+
+    def test_calming_image_display_is_skipped_outside_the_twenty_percent_roll(self) -> None:
+        with TemporaryDirectory() as directory:
+            image_directory = Path(directory) / ".images"
+            image_directory.mkdir()
+            image = QPixmap(2, 2)
+            image.fill(Qt.GlobalColor.blue)
+            self.assertTrue(image.save(str(image_directory / "calm.png")))
+
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            with (
+                patch("spoonfeed.native.CALMING_IMAGE_DIRECTORY", image_directory),
+                patch("spoonfeed.native.random.random", return_value=0.2),
+            ):
+                window.show_random_calming_image()
+
+            self.assertIsNone(window.calming_image_window)
             window.close()
 
 
