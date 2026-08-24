@@ -28,7 +28,12 @@ the image window, which also closes automatically after one minute.
 
 The `+1 hour` and Shift-held `Next midnight` defer actions are calculated from
 the active **View as of** time. In the live `Now` view, that reference is the
-current time.
+current time. On repeating tasks, they move only the selected occurrence's
+display time; they do not shift the series schedule.
+
+Repeating occurrences are sequential by default: the next occurrence appears
+after its preceding occurrence is checked off. **Show successor tasks** reveals
+later blocked occurrences and marks their previous-occurrence dependency.
 
 When **Show successor tasks** is enabled, dependency cues show a successor's
 predecessor (`after: …`) and the successors a task unlocks (`unlocks: …`).

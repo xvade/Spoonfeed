@@ -252,6 +252,7 @@ class TaskRow(QFrame):
         on_add_subtask: Callable[[Task], None],
         predecessor_title: Optional[str] = None,
         successor_titles: Optional[list[str]] = None,
+        occurrence_predecessor_at: Optional[datetime] = None,
     ) -> None:
         super().__init__()
         self.task = task
@@ -272,6 +273,14 @@ class TaskRow(QFrame):
             dependency.setObjectName("dependency-indicator")
             dependency.setStyleSheet("color: #477795; font-weight: 600;")
             dependency.setToolTip(f"Successor task: complete {predecessor_title} first")
+            dependency.installEventFilter(self)
+            layout.addWidget(dependency)
+        if occurrence_predecessor_at is not None:
+            previous = occurrence_predecessor_at.astimezone().strftime("%Y-%m-%d %H:%M")
+            dependency = QLabel(f"after: previous occurrence · {previous}")
+            dependency.setObjectName("dependency-indicator")
+            dependency.setStyleSheet("color: #477795; font-weight: 600;")
+            dependency.setToolTip("Successor occurrence: complete the previous occurrence first")
             dependency.installEventFilter(self)
             layout.addWidget(dependency)
         if successor_titles:
@@ -307,7 +316,7 @@ class TaskRow(QFrame):
         close.clicked.connect(lambda: on_close(task))
         layout.addWidget(close)
         if task.is_repeating:
-            defer_label = "Move series to midnight" if shift_held else "Move series +1 hour"
+            defer_label = "Move occurrence to midnight" if shift_held else "Move occurrence +1 hour"
         else:
             defer_label = "Next midnight" if shift_held else "+1 hour"
         defer = QPushButton(defer_label)
@@ -732,6 +741,7 @@ class SpoonfeedWindow(QMainWindow):
                         self.open_create,
                         predecessor_titles.get(task.id),
                         successor_titles.get(task.id),
+                        task.occurrence_predecessor_at if self.show_successors_input.isChecked() else None,
                     )
                 )
                 # A parent reports active children hidden by their own defer
@@ -826,7 +836,7 @@ class SpoonfeedWindow(QMainWindow):
     def defer_task(self, task: Task) -> None:
         view_time = self._view_as_of_time()
         target = next_local_midnight(view_time) if self.shift_held else view_time + timedelta(hours=1)
-        self.store.defer_task(task.id, target)
+        self.store.defer_task(task.id, target, occurrence_at=task.occurrence_at)
         self.refresh()
 
     def closeEvent(self, event: QEvent) -> None:  # noqa: N802 (Qt naming convention)

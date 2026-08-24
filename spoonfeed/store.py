@@ -47,6 +47,9 @@ class Task:
     # A repeating series becomes a virtual task per visible occurrence.  This
     # is None for an ordinary task and identifies the instance being acted on.
     occurrence_at: Optional[datetime] = None
+    # Repeating occurrences form an implicit chain. This is populated only for
+    # virtual occurrence rows and points to the preceding scheduled instance.
+    occurrence_predecessor_at: Optional[datetime] = None
     parent_id: Optional[int] = None
     depth: int = 0
     hidden_child_count: int = 0
@@ -126,6 +129,16 @@ class TaskStore:
             """
         )
         self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS deferred_occurrences (
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                occurrence_at TEXT NOT NULL,
+                defer_at TEXT NOT NULL,
+                PRIMARY KEY(task_id, occurrence_at)
+            )
+            """
+        )
+        self.connection.execute(
             "CREATE INDEX IF NOT EXISTS tasks_visible_index "
             "ON tasks(completed_at, deleted_at, defer_at, created_at)"
         )
@@ -136,6 +149,10 @@ class TaskStore:
         self.connection.execute(
             "CREATE INDEX IF NOT EXISTS completed_occurrences_completed_index "
             "ON completed_occurrences(completed_at)"
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS deferred_occurrences_defer_index "
+            "ON deferred_occurrences(defer_at)"
         )
         self.connection.execute("CREATE INDEX IF NOT EXISTS tasks_parent_index ON tasks(parent_id, created_at)")
         self.connection.execute("CREATE INDEX IF NOT EXISTS tasks_predecessor_index ON tasks(predecessor_id)")
@@ -239,7 +256,9 @@ class TaskStore:
         ).fetchall()
         visible_repeats: list[Task] = []
         for row in series_rows:
-            visible_repeats.extend(self._visible_occurrences(self._task_from_row(row), point_in_time))
+            visible_repeats.extend(
+                self._visible_occurrences(self._task_from_row(row), point_in_time, show_successors=show_successors)
+            )
         visible = self._order_visible_tasks(visible_normal, visible_repeats)
         if recent_closed_since is not None:
             closed_rows = self.connection.execute(
@@ -395,16 +414,22 @@ class TaskStore:
         if task.is_repeating:
             if occurrence_at is None:
                 raise ValueError("A repeating task needs an occurrence time to be completed")
+            completed_at = at or utc_now()
             self.connection.execute(
                 """
                 INSERT OR IGNORE INTO completed_occurrences(task_id, occurrence_at, completed_at)
                 VALUES (?, ?, ?)
                 """,
-                (task_id, to_storage(occurrence_at), to_storage(at or utc_now())),
+                (task_id, to_storage(occurrence_at), to_storage(completed_at)),
+            )
+            # A completed occurrence can no longer need a custom display time.
+            self.connection.execute(
+                "DELETE FROM deferred_occurrences WHERE task_id = ? AND occurrence_at = ?",
+                (task_id, to_storage(occurrence_at)),
             )
             self.connection.commit()
             self._record_action(before)
-            return replace(task, defer_at=occurrence_at, occurrence_at=occurrence_at, completed_at=at or utc_now())
+            return replace(task, defer_at=occurrence_at, occurrence_at=occurrence_at, completed_at=completed_at)
         self._ensure_children_closed(task_id)
         closed = self._close_task(task_id, "completed_at", at or utc_now())
         self._record_action(before)
@@ -418,19 +443,25 @@ class TaskStore:
         self._record_action(before)
         return deleted
 
-    def defer_task(self, task_id: int, until: datetime) -> Task:
-        """Hide a task; for a series, move its shared repeat start time."""
+    def defer_task(self, task_id: int, until: datetime, *, occurrence_at: Optional[datetime] = None) -> Task:
+        """Hide a task or move one repeating occurrence's display time."""
         before = self._snapshot()
         task = self.get_task(task_id)
         self._validate_deferral(until, task.due_at, task_id=task_id)
         if task.is_repeating:
-            result = self.connection.execute(
+            if occurrence_at is None:
+                raise ValueError("A repeating task needs an occurrence time to be deferred")
+            self.connection.execute(
                 """
-                UPDATE tasks SET defer_at = ?, repeat_start_at = ?
-                WHERE id = ? AND completed_at IS NULL AND deleted_at IS NULL
+                INSERT INTO deferred_occurrences(task_id, occurrence_at, defer_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(task_id, occurrence_at) DO UPDATE SET defer_at = excluded.defer_at
                 """,
-                (to_storage(until), to_storage(until), task_id),
+                (task_id, to_storage(occurrence_at), to_storage(until)),
             )
+            self.connection.commit()
+            self._record_action(before)
+            return replace(task, defer_at=until, occurrence_at=occurrence_at)
         else:
             result = self.connection.execute(
                 """
@@ -519,33 +550,46 @@ class TaskStore:
         if any(due is not None and until >= due for due in due_dates):
             raise ValueError("Cannot defer a task until or past an affected due date")
 
-    def _snapshot(self) -> tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]:
+    def _snapshot(self) -> tuple[
+        tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]
+    ]:
         """Capture mutable task tables for in-session undo/redo restoration."""
         tasks = tuple(tuple(row) for row in self.connection.execute("SELECT * FROM tasks ORDER BY id"))
         occurrences = tuple(
             tuple(row)
             for row in self.connection.execute("SELECT * FROM completed_occurrences ORDER BY task_id, occurrence_at")
         )
-        return tasks, occurrences
+        deferred_occurrences = tuple(
+            tuple(row)
+            for row in self.connection.execute("SELECT * FROM deferred_occurrences ORDER BY task_id, occurrence_at")
+        )
+        return tasks, occurrences, deferred_occurrences
 
-    def _record_action(self, before: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]) -> None:
+    def _record_action(
+        self, before: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]
+    ) -> None:
         """Store a completed mutation and invalidate redo after a divergent action."""
         after = self._snapshot()
         if after != before:
             self._undo_stack.append((before, after))
             self._redo_stack.clear()
 
-    def _restore_snapshot(self, snapshot: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]) -> None:
+    def _restore_snapshot(
+        self, snapshot: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]
+    ) -> None:
         """Replace mutable tables with a prior snapshot while honoring self FKs."""
-        tasks, occurrences = snapshot
+        tasks, occurrences, deferred_occurrences = snapshot
         self.connection.execute("PRAGMA defer_foreign_keys = ON")
         self.connection.execute("DELETE FROM completed_occurrences")
+        self.connection.execute("DELETE FROM deferred_occurrences")
         self.connection.execute("DELETE FROM tasks")
         if tasks:
             placeholders = ", ".join("?" for _ in tasks[0])
             self.connection.executemany(f"INSERT INTO tasks VALUES ({placeholders})", tasks)
         if occurrences:
             self.connection.executemany("INSERT INTO completed_occurrences VALUES (?, ?, ?)", occurrences)
+        if deferred_occurrences:
+            self.connection.executemany("INSERT INTO deferred_occurrences VALUES (?, ?, ?)", deferred_occurrences)
         self.connection.commit()
 
     @staticmethod
@@ -556,8 +600,8 @@ class TaskStore:
         if repeat_interval_seconds is not None and repeat_interval_seconds <= 0:
             raise ValueError("A repeat interval must be greater than zero")
 
-    def _visible_occurrences(self, task: Task, now: datetime) -> list[Task]:
-        """Materialize each due, incomplete occurrence of one repeating series."""
+    def _visible_occurrences(self, task: Task, now: datetime, *, show_successors: bool = False) -> list[Task]:
+        """Materialize due repeat instances, chaining each one after the prior one."""
         if not task.is_repeating or task.repeat_start_at is None or task.repeat_interval_seconds is None:
             return []
         elapsed_seconds = (now - task.repeat_start_at).total_seconds()
@@ -569,11 +613,33 @@ class TaskStore:
             (task.id,),
         ).fetchall()
         completed = {row["occurrence_at"] for row in completed_rows}
+        deferred_rows = self.connection.execute(
+            "SELECT occurrence_at, defer_at FROM deferred_occurrences WHERE task_id = ?",
+            (task.id,),
+        ).fetchall()
+        deferred = {row["occurrence_at"]: from_storage(row["defer_at"]) for row in deferred_rows}
         occurrences: list[Task] = []
+        previous_occurrence_at: Optional[datetime] = None
         for index in range(last_index + 1):
             occurrence_at = task.repeat_start_at + timedelta(seconds=task.repeat_interval_seconds * index)
-            if to_storage(occurrence_at) not in completed:
-                occurrences.append(replace(task, defer_at=occurrence_at, occurrence_at=occurrence_at))
+            occurrence_key = to_storage(occurrence_at)
+            if occurrence_key in completed:
+                previous_occurrence_at = occurrence_at
+                continue
+            display_at = deferred.get(occurrence_key, occurrence_at)
+            predecessor_is_complete = (
+                previous_occurrence_at is None or to_storage(previous_occurrence_at) in completed
+            )
+            if display_at is not None and display_at <= now and (show_successors or predecessor_is_complete):
+                occurrences.append(
+                    replace(
+                        task,
+                        defer_at=display_at,
+                        occurrence_at=occurrence_at,
+                        occurrence_predecessor_at=previous_occurrence_at,
+                    )
+                )
+            previous_occurrence_at = occurrence_at
         return occurrences
 
     def _next_occurrence_after(self, task: Task, now: datetime) -> Optional[datetime]:
@@ -587,13 +653,26 @@ class TaskStore:
             (task.id,),
         ).fetchall()
         completed = {row["occurrence_at"] for row in completed_rows}
+        deferred_rows = self.connection.execute(
+            "SELECT occurrence_at, defer_at FROM deferred_occurrences WHERE task_id = ?",
+            (task.id,),
+        ).fetchall()
+        deferred = {row["occurrence_at"]: from_storage(row["defer_at"]) for row in deferred_rows}
+        delayed_candidates = [
+            display_at
+            for occurrence_key, display_at in deferred.items()
+            if occurrence_key not in completed and display_at is not None and display_at > now
+        ]
         # The next occurrence is normally the next index. A completed row can
         # exist only when an old schedule was edited, so keep searching safely.
         while True:
             candidate = task.repeat_start_at + timedelta(seconds=task.repeat_interval_seconds * next_index)
-            if to_storage(candidate) not in completed:
-                return candidate
+            candidate_key = to_storage(candidate)
+            if candidate_key not in completed and candidate_key not in deferred:
+                scheduled_candidate = candidate
+                break
             next_index += 1
+        return min([scheduled_candidate, *delayed_candidates])
 
     def _order_visible_tasks(self, visible_normal: list[Task], visible_repeats: list[Task]) -> list[Task]:
         """Nest visible children under visible parents and count hidden children.

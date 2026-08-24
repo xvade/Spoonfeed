@@ -89,6 +89,26 @@ class NativeWindowTests(unittest.TestCase):
             self.assertIn("unlocks: Second", indicators)
             window.close()
 
+    def test_show_successors_marks_repeating_occurrences_as_a_chain(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            now = utc_now()
+            window.store.create_task(
+                "Recurring",
+                repeat_interval_seconds=3_600,
+                repeat_start_at=now - timedelta(hours=2),
+                created_at=now - timedelta(hours=3),
+            )
+
+            window.show_successors_input.setChecked(True)
+            indicators = [
+                label.text()
+                for label in window.task_container.findChildren(QLabel, "dependency-indicator")
+            ]
+
+            self.assertTrue(any(text.startswith("after: previous occurrence") for text in indicators))
+            window.close()
+
     def test_relationship_dropdown_candidates_are_limited_to_currently_visible_tasks(self) -> None:
         with TemporaryDirectory() as directory:
             window = SpoonfeedWindow(Path(directory) / "tasks.db")

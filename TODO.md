@@ -39,6 +39,12 @@
 - Defer actions now use the active View as of timestamp: `+1 hour` adds an
   hour to it, while Shift-held Next midnight finds the following local midnight
   after it. The live Now view continues to use the current time.
+- Repeating-task defer actions now persist a display-time override only for the
+  selected occurrence. The series start and interval remain unchanged, and the
+  override participates in undo/redo and refresh scheduling.
+- Consecutive repeating occurrences now form an implicit predecessor chain:
+  only the next incomplete occurrence shows normally; Show successor tasks
+  reveals later occurrences and marks their previous-occurrence dependency.
 - Added an optional post-completion calming-image flow. `.images/` is ignored;
   for one minute after a check-off, `D` offers one random image and works only
   once until the next check-off. The image window closes on any keypress or

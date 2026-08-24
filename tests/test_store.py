@@ -101,16 +101,44 @@ class TaskStoreTests(unittest.TestCase):
         )
 
         visible = self.store.list_visible(NOW)
-        self.assertEqual([task.occurrence_at for task in visible], [
+        self.assertEqual([task.occurrence_at for task in visible], [NOW - timedelta(hours=2)])
+        self.assertTrue(all(task.id == series.id and task.is_repeating for task in visible))
+
+        successors = self.store.list_visible(NOW, show_successors=True)
+        self.assertEqual([task.occurrence_at for task in successors], [
             NOW - timedelta(hours=2),
             NOW - timedelta(hours=1),
             NOW,
         ])
-        self.assertTrue(all(task.id == series.id and task.is_repeating for task in visible))
+        self.assertEqual(successors[1].occurrence_predecessor_at, NOW - timedelta(hours=2))
 
-        self.store.complete_task(series.id, NOW, occurrence_at=visible[1].occurrence_at)
+        self.store.complete_task(series.id, NOW, occurrence_at=visible[0].occurrence_at)
         remaining = self.store.list_visible(NOW)
-        self.assertEqual([task.occurrence_at for task in remaining], [NOW - timedelta(hours=2), NOW])
+        self.assertEqual([task.occurrence_at for task in remaining], [NOW - timedelta(hours=1)])
+
+    def test_deferring_one_repeating_occurrence_preserves_the_series_schedule(self) -> None:
+        series = self.store.create_task(
+            "Water plants",
+            repeat_interval_seconds=3_600,
+            repeat_start_at=NOW - timedelta(hours=2),
+            created_at=NOW - timedelta(hours=3),
+        )
+        occurrence = self.store.list_visible(NOW)[-1]
+        target = NOW + timedelta(minutes=30)
+
+        self.store.defer_task(series.id, target, occurrence_at=occurrence.occurrence_at)
+
+        self.assertEqual(self.store.get_task(series.id).repeat_start_at, NOW - timedelta(hours=2))
+        self.assertEqual(self.store.list_visible(NOW), [])
+        self.assertEqual(self.store.next_deferred_at(NOW), target)
+        moved = self.store.list_visible(target)
+        self.assertEqual([task.occurrence_at for task in moved], [NOW - timedelta(hours=2)])
+        self.assertEqual(moved[0].defer_at, target)
+
+        self.assertTrue(self.store.undo())
+        self.assertEqual([task.occurrence_at for task in self.store.list_visible(NOW)], [NOW - timedelta(hours=2)])
+        self.assertTrue(self.store.redo())
+        self.assertEqual(self.store.list_visible(NOW), [])
 
     def test_editing_or_deleting_a_repeating_occurrence_changes_the_whole_series(self) -> None:
         series = self.store.create_task(
