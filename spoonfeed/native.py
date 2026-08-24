@@ -52,11 +52,11 @@ def local_timezone() -> tzinfo:
     return datetime.now().astimezone().tzinfo or timezone.utc
 
 
-def next_local_midnight() -> datetime:
-    """Calculate the next local midnight, then normalize it for SQLite storage."""
-    now = datetime.now().astimezone()
-    tomorrow = (now + timedelta(days=1)).date()
-    return datetime.combine(tomorrow, datetime.min.time(), now.tzinfo).astimezone(timezone.utc)
+def next_local_midnight(reference_at: datetime) -> datetime:
+    """Calculate the next local midnight after ``reference_at`` for SQLite."""
+    local_reference = reference_at.astimezone(local_timezone())
+    tomorrow = (local_reference + timedelta(days=1)).date()
+    return datetime.combine(tomorrow, datetime.min.time(), local_reference.tzinfo).astimezone(timezone.utc)
 
 
 class TaskDialog(QDialog):
@@ -540,13 +540,17 @@ class SpoonfeedWindow(QMainWindow):
         self.as_of_input.blockSignals(False)
         self.refresh()
 
+    def _view_as_of_time(self) -> datetime:
+        """Return the exact point in time represented by the active task view."""
+        return utc_now() if self.viewing_now else TaskDialog._utc_value(self.as_of_input)
+
     def refresh(self) -> None:
         """Rebuild the list so every action reflects the current SQLite state."""
         while self.task_layout.count():
             item = self.task_layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
-        point_in_time = utc_now() if self.viewing_now else TaskDialog._utc_value(self.as_of_input)
+        point_in_time = self._view_as_of_time()
         recent_since = TaskDialog._utc_value(self.recent_since_input) if self.show_recent_input.isChecked() else None
         tasks = self.store.list_visible(
             point_in_time,
@@ -651,7 +655,8 @@ class SpoonfeedWindow(QMainWindow):
         self.refresh()
 
     def defer_task(self, task: Task) -> None:
-        target = next_local_midnight() if self.shift_held else utc_now() + timedelta(hours=1)
+        view_time = self._view_as_of_time()
+        target = next_local_midnight(view_time) if self.shift_held else view_time + timedelta(hours=1)
         self.store.defer_task(task.id, target)
         self.refresh()
 

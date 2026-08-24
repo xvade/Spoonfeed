@@ -10,12 +10,12 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
 from unittest.mock import patch
 
-from spoonfeed.native import SpoonfeedWindow
+from spoonfeed.native import SpoonfeedWindow, next_local_midnight
 from spoonfeed.store import utc_now
 
 
@@ -54,6 +54,23 @@ class NativeWindowTests(unittest.TestCase):
             window.refresh()
 
             self.assertEqual(window.task_layout.count(), 1)
+            window.close()
+
+    def test_defer_actions_use_the_fixed_view_as_of_time(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            window.viewing_now = False
+            window.as_of_input.setDateTime(QDateTime(2025, 2, 3, 14, 30, 0))
+            view_time = window._view_as_of_time()
+
+            hourly = window.store.create_task("One hour")
+            window.defer_task(hourly)
+            self.assertEqual(window.store.get_task(hourly.id).defer_at, view_time + timedelta(hours=1))
+
+            midnight = window.store.create_task("Next midnight")
+            window.shift_held = True
+            window.defer_task(midnight)
+            self.assertEqual(window.store.get_task(midnight.id).defer_at, next_local_midnight(view_time))
             window.close()
 
     def test_calming_image_offer_expires_after_one_minute_and_is_once(self) -> None:

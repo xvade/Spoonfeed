@@ -28,6 +28,9 @@
   legacy `old.db` task schema to Spoonfeed's current SQLite format.
 - Added optional completion audio: a root-level `hero.m4a` plays after a task
   is successfully checked off (but never after deletion).
+- Defer actions now use the active View as of timestamp: `+1 hour` adds an
+  hour to it, while Shift-held Next midnight finds the following local midnight
+  after it. The live Now view continues to use the current time.
 - Added an optional post-completion calming-image flow. `.images/` is ignored;
   for one minute after a check-off, `D` offers one random image and works only
   once until the next check-off. The image window closes on any keypress or

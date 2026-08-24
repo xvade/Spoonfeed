@@ -26,6 +26,10 @@ shortcut remains available even when focus changes as the completed row
 disappears. Confirming displays an image only 20% of the time. Any key closes
 the image window, which also closes automatically after one minute.
 
+The `+1 hour` and Shift-held `Next midnight` defer actions are calculated from
+the active **View as of** time. In the live `Now` view, that reference is the
+current time.
+
 ## Migrate `old.db`
 
 To create a current-format copy of the legacy database without modifying the
