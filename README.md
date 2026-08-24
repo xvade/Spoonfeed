@@ -19,6 +19,8 @@ This opens Spoonfeed as a native desktop window and creates `spoonfeed.db`
 beside the launcher if it does not already exist. The database is intentionally
 ignored by Git because it contains local task data.
 
+Place `hero.m4a` in the project root to play it whenever a task is completed.
+
 ## Migrate `old.db`
 
 To create a current-format copy of the legacy database without modifying the

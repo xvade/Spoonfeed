@@ -13,8 +13,9 @@ from pathlib import Path
 import sys
 from typing import Callable, Optional
 
-from PySide6.QtCore import QDateTime, QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QDateTime, QEvent, QObject, Qt, QTimer, QUrl
 from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -37,6 +38,10 @@ from PySide6.QtWidgets import (
 )
 
 from .store import Task, TaskStore, utc_now
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CHECK_OFF_SOUND_PATH = PROJECT_ROOT / "hero.m4a"
 
 
 def local_timezone() -> tzinfo:
@@ -304,6 +309,7 @@ class SpoonfeedWindow(QMainWindow):
         super().__init__()
         self.store = TaskStore(database_path)
         self.shift_held = False
+        self._setup_check_off_sound()
         # The initial view tracks the clock; the picker becomes a fixed as-of
         # view only after the user intentionally changes it.
         self.viewing_now = True
@@ -369,6 +375,25 @@ class SpoonfeedWindow(QMainWindow):
         self.task_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll.setWidget(self.task_container)
         layout.addWidget(scroll, 1)
+
+    def _setup_check_off_sound(self) -> None:
+        """Prepare the optional check-off audio once for low-latency playback."""
+        self.check_off_sound_path = CHECK_OFF_SOUND_PATH
+        self.check_off_player: Optional[QMediaPlayer] = None
+        if not self.check_off_sound_path.is_file():
+            return
+        self.check_off_audio = QAudioOutput(self)
+        self.check_off_audio.setVolume(1.0)
+        self.check_off_player = QMediaPlayer(self)
+        self.check_off_player.setAudioOutput(self.check_off_audio)
+        self.check_off_player.setSource(QUrl.fromLocalFile(str(self.check_off_sound_path)))
+
+    def play_check_off_sound(self) -> None:
+        """Play ``hero.m4a`` after a successful completion, restarting if needed."""
+        if self.check_off_player is None:
+            return
+        self.check_off_player.setPosition(0)
+        self.check_off_player.play()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Provide app-wide N and Shift behavior without stealing text input."""
@@ -514,6 +539,7 @@ class SpoonfeedWindow(QMainWindow):
             self.store.delete_task(task.id)
         else:
             self.store.complete_task(task.id, occurrence_at=task.occurrence_at)
+            self.play_check_off_sound()
         self.refresh()
 
     def defer_task(self, task: Task) -> None:

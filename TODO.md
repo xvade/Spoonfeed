@@ -26,6 +26,8 @@
   test, and a runnable README.
 - Added `scripts/migrate_old_db.py`, a non-destructive converter from the
   legacy `old.db` task schema to Spoonfeed's current SQLite format.
+- Added optional completion audio: a root-level `hero.m4a` plays after a task
+  is successfully checked off (but never after deletion).
 
 ## Next work, in prompt order
 
