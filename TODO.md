@@ -21,6 +21,8 @@
 - The Show successor tasks view now labels both sides of each visible
   dependency: successor rows identify the predecessor they follow and
   predecessor rows list the tasks they unlock.
+- Parent and predecessor dropdowns now intersect their safe candidates with
+  the tasks visible in the current as-of view and active filters.
 - Added in-session undo/redo snapshots for task mutations, including recurring
   occurrence completions, bound to Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z.
 - Added an as-of view bar with successor and recently closed filters, plus due

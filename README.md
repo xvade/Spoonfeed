@@ -33,6 +33,9 @@ current time.
 When **Show successor tasks** is enabled, dependency cues show a successor's
 predecessor (`after: …`) and the successors a task unlocks (`unlocks: …`).
 
+Parent and predecessor dropdowns only offer tasks currently visible under the
+active view and its filters.
+
 ## Migrate `old.db`
 
 To create a current-format copy of the legacy database without modifying the

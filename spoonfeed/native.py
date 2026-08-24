@@ -561,6 +561,24 @@ class SpoonfeedWindow(QMainWindow):
         """Return the exact point in time represented by the active task view."""
         return utc_now() if self.viewing_now else TaskDialog._utc_value(self.as_of_input)
 
+    def _visible_relationship_task_ids(self) -> set[int]:
+        """Return active task IDs shown by the current view's filters.
+
+        Store-level candidate methods enforce relationship safety; this helper
+        adds the UI rule that dropdowns should only offer tasks the user can
+        currently see.
+        """
+        recent_since = TaskDialog._utc_value(self.recent_since_input) if self.show_recent_input.isChecked() else None
+        return {
+            task.id
+            for task in self.store.list_visible(
+                self._view_as_of_time(),
+                show_successors=self.show_successors_input.isChecked(),
+                recent_closed_since=recent_since,
+            )
+            if task.is_active
+        }
+
     def refresh(self) -> None:
         """Rebuild the list so every action reflects the current SQLite state."""
         while self.task_layout.count():
@@ -629,10 +647,11 @@ class SpoonfeedWindow(QMainWindow):
         self.refresh_timer.start(max(1_000, min(milliseconds, 21_600_000)))
 
     def open_create(self, parent_task: Optional[Task] = None) -> None:
+        visible_ids = self._visible_relationship_task_ids()
         dialog = TaskDialog(
             self,
-            parent_choices=self.store.list_parent_candidates(),
-            predecessor_choices=self.store.list_predecessor_candidates(),
+            parent_choices=[task for task in self.store.list_parent_candidates() if task.id in visible_ids],
+            predecessor_choices=[task for task in self.store.list_predecessor_candidates() if task.id in visible_ids],
             selected_parent_id=parent_task.id if parent_task is not None else None,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -654,11 +673,12 @@ class SpoonfeedWindow(QMainWindow):
             self.refresh()
 
     def open_edit(self, task: Task) -> None:
+        visible_ids = self._visible_relationship_task_ids()
         dialog = TaskDialog(
             self,
             task,
-            parent_choices=self.store.list_parent_candidates(task.id),
-            predecessor_choices=self.store.list_predecessor_candidates(task.id),
+            parent_choices=[candidate for candidate in self.store.list_parent_candidates(task.id) if candidate.id in visible_ids],
+            predecessor_choices=[candidate for candidate in self.store.list_predecessor_candidates(task.id) if candidate.id in visible_ids],
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             try:

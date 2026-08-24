@@ -89,6 +89,22 @@ class NativeWindowTests(unittest.TestCase):
             self.assertIn("unlocks: Second", indicators)
             window.close()
 
+    def test_relationship_dropdown_candidates_are_limited_to_currently_visible_tasks(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            visible = window.store.create_task("Visible")
+            hidden = window.store.create_task("Deferred", defer_at=utc_now() + timedelta(hours=1))
+            window.store.create_task("Blocked", predecessor_id=visible.id)
+
+            visible_ids = window._visible_relationship_task_ids()
+            parent_ids = {task.id for task in window.store.list_parent_candidates() if task.id in visible_ids}
+            predecessor_ids = {task.id for task in window.store.list_predecessor_candidates() if task.id in visible_ids}
+
+            self.assertEqual(parent_ids, {visible.id})
+            self.assertEqual(predecessor_ids, {visible.id})
+            self.assertNotIn(hidden.id, visible_ids)
+            window.close()
+
     def test_calming_image_offer_expires_after_one_minute_and_is_once(self) -> None:
         with TemporaryDirectory() as directory:
             window = SpoonfeedWindow(Path(directory) / "tasks.db")
