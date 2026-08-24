@@ -243,6 +243,8 @@ class TaskRow(QFrame):
         on_close: Callable[[Task], None],
         on_defer: Callable[[Task], None],
         on_add_subtask: Callable[[Task], None],
+        predecessor_title: Optional[str] = None,
+        successor_titles: Optional[list[str]] = None,
     ) -> None:
         super().__init__()
         self.task = task
@@ -258,6 +260,21 @@ class TaskRow(QFrame):
         title.setFont(title_font)
         title.installEventFilter(self)
         layout.addWidget(title, 1)
+        if predecessor_title is not None:
+            dependency = QLabel(f"after: {predecessor_title}")
+            dependency.setObjectName("dependency-indicator")
+            dependency.setStyleSheet("color: #477795; font-weight: 600;")
+            dependency.setToolTip(f"Successor task: complete {predecessor_title} first")
+            dependency.installEventFilter(self)
+            layout.addWidget(dependency)
+        if successor_titles:
+            successors = ", ".join(successor_titles)
+            dependency = QLabel(f"unlocks: {successors}")
+            dependency.setObjectName("dependency-indicator")
+            dependency.setStyleSheet("color: #477795; font-weight: 600;")
+            dependency.setToolTip(f"Predecessor task for: {successors}")
+            dependency.installEventFilter(self)
+            layout.addWidget(dependency)
         if task.is_repeating and task.occurrence_at is not None:
             occurrence = task.occurrence_at.astimezone().strftime("%Y-%m-%d %H:%M")
             schedule = QLabel(f"repeats · {occurrence}")
@@ -557,6 +574,17 @@ class SpoonfeedWindow(QMainWindow):
             show_successors=self.show_successors_input.isChecked(),
             recent_closed_since=recent_since,
         )
+        predecessor_titles: dict[int, str] = {}
+        successor_titles: dict[int, list[str]] = {}
+        if self.show_successors_input.isChecked():
+            # The toggle makes otherwise blocked successors visible, so label
+            # both ends of every displayed dependency to preserve its context.
+            for task in tasks:
+                if task.predecessor_id is None:
+                    continue
+                predecessor = self.store.get_task(task.predecessor_id)
+                predecessor_titles[task.id] = predecessor.title
+                successor_titles.setdefault(task.predecessor_id, []).append(task.title)
         if not tasks:
             empty = QLabel("Nothing to do right now.")
             # Keep the empty state present but visually quieter than task content.
@@ -565,7 +593,16 @@ class SpoonfeedWindow(QMainWindow):
         else:
             for index, task in enumerate(tasks):
                 self.task_layout.addWidget(
-                    TaskRow(task, self.shift_held, self.open_edit, self.close_task, self.defer_task, self.open_create)
+                    TaskRow(
+                        task,
+                        self.shift_held,
+                        self.open_edit,
+                        self.close_task,
+                        self.defer_task,
+                        self.open_create,
+                        predecessor_titles.get(task.id),
+                        successor_titles.get(task.id),
+                    )
                 )
                 # A parent reports active children hidden by their own defer
                 # rules after its visible child block, as requested in PROMPT.

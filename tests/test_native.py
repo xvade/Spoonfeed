@@ -9,7 +9,7 @@ import unittest
 # Must be selected before Qt creates its single QApplication instance.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
@@ -71,6 +71,22 @@ class NativeWindowTests(unittest.TestCase):
             window.shift_held = True
             window.defer_task(midnight)
             self.assertEqual(window.store.get_task(midnight.id).defer_at, next_local_midnight(view_time))
+            window.close()
+
+    def test_show_successors_marks_both_ends_of_a_dependency(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            first = window.store.create_task("First")
+            window.store.create_task("Second", predecessor_id=first.id)
+
+            window.show_successors_input.setChecked(True)
+            indicators = [
+                label.text()
+                for label in window.task_container.findChildren(QLabel, "dependency-indicator")
+            ]
+
+            self.assertIn("after: First", indicators)
+            self.assertIn("unlocks: Second", indicators)
             window.close()
 
     def test_calming_image_offer_expires_after_one_minute_and_is_once(self) -> None:

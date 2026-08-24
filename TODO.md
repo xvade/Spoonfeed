@@ -18,6 +18,9 @@
   with its hidden parent, and blocks parent closure while descendants are open.
 - Added predecessor selection and database validation for dependency cycles and
   parent/successor conflicts. A task stays hidden until its predecessor closes.
+- The Show successor tasks view now labels both sides of each visible
+  dependency: successor rows identify the predecessor they follow and
+  predecessor rows list the tasks they unlock.
 - Added in-session undo/redo snapshots for task mutations, including recurring
   occurrence completions, bound to Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z.
 - Added an as-of view bar with successor and recently closed filters, plus due

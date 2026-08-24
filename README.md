@@ -30,6 +30,9 @@ The `+1 hour` and Shift-held `Next midnight` defer actions are calculated from
 the active **View as of** time. In the live `Now` view, that reference is the
 current time.
 
+When **Show successor tasks** is enabled, dependency cues show a successor's
+predecessor (`after: …`) and the successors a task unlocks (`unlocks: …`).
+
 ## Migrate `old.db`
 
 To create a current-format copy of the legacy database without modifying the
