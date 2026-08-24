@@ -133,6 +133,10 @@ class TaskStore:
             "CREATE INDEX IF NOT EXISTS completed_occurrences_task_index "
             "ON completed_occurrences(task_id, occurrence_at)"
         )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS completed_occurrences_completed_index "
+            "ON completed_occurrences(completed_at)"
+        )
         self.connection.execute("CREATE INDEX IF NOT EXISTS tasks_parent_index ON tasks(parent_id, created_at)")
         self.connection.execute("CREATE INDEX IF NOT EXISTS tasks_predecessor_index ON tasks(predecessor_id)")
         self.connection.commit()
@@ -249,6 +253,50 @@ class TaskStore:
             ).fetchall()
             visible.extend(self._task_from_row(row) for row in closed_rows)
         return visible
+
+    def list_completed_since(self, since: datetime) -> list[Task]:
+        """Return checked-off, non-deleted tasks since ``since`` newest first.
+
+        Repeating tasks persist each completion in ``completed_occurrences``;
+        represent those records as completed virtual occurrences alongside
+        ordinary completed tasks so history consumers need only one API.
+        """
+        stamp = to_storage(since)
+        normal_rows = self.connection.execute(
+            """
+            SELECT * FROM tasks
+            WHERE completed_at >= ? AND deleted_at IS NULL
+            ORDER BY completed_at DESC, id DESC
+            """,
+            (stamp,),
+        ).fetchall()
+        completed = [self._task_from_row(row) for row in normal_rows]
+
+        occurrence_rows = self.connection.execute(
+            """
+            SELECT tasks.*, completed_occurrences.occurrence_at AS occurrence_at,
+                   completed_occurrences.completed_at AS occurrence_completed_at
+            FROM completed_occurrences
+            JOIN tasks ON tasks.id = completed_occurrences.task_id
+            WHERE completed_occurrences.completed_at >= ? AND tasks.deleted_at IS NULL
+            ORDER BY completed_occurrences.completed_at DESC, tasks.id DESC
+            """,
+            (stamp,),
+        ).fetchall()
+        for row in occurrence_rows:
+            series = self._task_from_row(row)
+            occurrence_at = from_storage(row["occurrence_at"])
+            completed_at = from_storage(row["occurrence_completed_at"])
+            if occurrence_at is not None and completed_at is not None:
+                completed.append(
+                    replace(
+                        series,
+                        defer_at=occurrence_at,
+                        occurrence_at=occurrence_at,
+                        completed_at=completed_at,
+                    )
+                )
+        return sorted(completed, key=lambda task: (task.completed_at or task.created_at, task.id), reverse=True)
 
     def next_deferred_at(self, now: Optional[datetime] = None) -> Optional[datetime]:
         """Return the next active task or recurring occurrence visibility time.

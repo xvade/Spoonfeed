@@ -15,7 +15,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
 from unittest.mock import patch
 
-from spoonfeed.native import SpoonfeedWindow, next_local_midnight
+from spoonfeed.native import SpoonfeedWindow, next_local_midnight, previous_local_midnight
 from spoonfeed.store import utc_now
 
 
@@ -103,6 +103,54 @@ class NativeWindowTests(unittest.TestCase):
             self.assertEqual(parent_ids, {visible.id})
             self.assertEqual(predecessor_ids, {visible.id})
             self.assertNotIn(hidden.id, visible_ids)
+            window.close()
+
+    def test_completed_history_window_defaults_to_previous_midnight_and_excludes_deleted(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            completed = window.store.create_task("Checked off")
+            deleted = window.store.create_task("Deleted")
+            window.store.complete_task(completed.id)
+            window.store.delete_task(deleted.id)
+
+            window.open_completed_history()
+            history = window.completed_history_window
+
+            self.assertIsNotNone(history)
+            self.assertEqual(
+                history.since_input.dateTime().toSecsSinceEpoch(),  # type: ignore[union-attr]
+                int(previous_local_midnight().timestamp()),
+            )
+            labels = [label.text() for label in history.task_container.findChildren(QLabel)]  # type: ignore[union-attr]
+            self.assertIn("Checked off", labels)
+            self.assertNotIn("Deleted", labels)
+            history.close()  # type: ignore[union-attr]
+            window.close()
+
+    def test_t_hotkey_opens_completed_history(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            window.show()
+            calls: list[str] = []
+            window.open_completed_history = lambda: calls.append("opened")  # type: ignore[method-assign]
+
+            QTest.keyClick(window, Qt.Key.Key_T)
+            self.application.processEvents()
+
+            self.assertEqual(calls, ["opened"])
+            window.close()
+
+    def test_escape_closes_completed_history_window(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            window.open_completed_history()
+            history = window.completed_history_window
+            self.assertIsNotNone(history)
+
+            QTest.keyClick(history, Qt.Key.Key_Escape)  # type: ignore[arg-type]
+            self.application.processEvents()
+
+            self.assertIsNone(window.completed_history_window)
             window.close()
 
     def test_calming_image_offer_expires_after_one_minute_and_is_once(self) -> None:

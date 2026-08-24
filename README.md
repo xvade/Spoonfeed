@@ -36,6 +36,10 @@ predecessor (`after: …`) and the successors a task unlocks (`unlocks: …`).
 Parent and predecessor dropdowns only offer tasks currently visible under the
 active view and its filters.
 
+Click **Checked off since**, or press `T`, to open a separate completed-task
+history window. It defaults to the previous local midnight and never includes
+deleted tasks. Press Escape to close it.
+
 ## Migrate `old.db`
 
 To create a current-format copy of the legacy database without modifying the
@@ -55,6 +59,8 @@ repeat intervals if their old application used a different time unit.
 
 - Press `N`, or click **New task**, to open the task form. Press Return while
   entering the task name to save it.
+- Press `T`, or click **Checked off since**, to open the completed-task history
+  window. Adjust its datetime to change the lower bound.
 - The main list contains active tasks whose defer time has passed, ordered by
   creation time.
 - Double-click a task to edit its name, notes, or visibility time.

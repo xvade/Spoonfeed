@@ -64,6 +64,25 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_task(complete.id).completed_at, NOW + timedelta(minutes=1))
         self.assertEqual(self.store.get_task(deleted.id).deleted_at, NOW + timedelta(minutes=2))
 
+    def test_completed_history_includes_repeating_occurrences_but_not_deleted_tasks(self) -> None:
+        normal = self.store.create_task("Normal", created_at=NOW)
+        deleted = self.store.create_task("Deleted", created_at=NOW)
+        series = self.store.create_task(
+            "Recurring",
+            repeat_interval_seconds=3_600,
+            repeat_start_at=NOW,
+            created_at=NOW,
+        )
+        self.store.complete_task(normal.id, NOW + timedelta(minutes=1))
+        self.store.delete_task(deleted.id, NOW + timedelta(minutes=2))
+        self.store.complete_task(series.id, NOW + timedelta(minutes=3), occurrence_at=NOW)
+
+        completed = self.store.list_completed_since(NOW)
+
+        self.assertEqual([task.title for task in completed], ["Recurring", "Normal"])
+        self.assertEqual(completed[0].occurrence_at, NOW)
+        self.assertEqual(completed[0].completed_at, NOW + timedelta(minutes=3))
+
     def test_closed_tasks_cannot_be_edited_or_closed_again(self) -> None:
         task = self.store.create_task("One-shot", created_at=NOW)
         self.store.complete_task(task.id, NOW)

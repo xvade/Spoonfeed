@@ -23,6 +23,9 @@
   predecessor rows list the tasks they unlock.
 - Parent and predecessor dropdowns now intersect their safe candidates with
   the tasks visible in the current as-of view and active filters.
+- Added the Checked off since history window, opened by its header button or
+  `T`. It defaults to the previous local midnight, filters out deleted tasks,
+  includes completed recurring occurrences, and closes with Escape.
 - Added in-session undo/redo snapshots for task mutations, including recurring
   occurrence completions, bound to Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z.
 - Added an as-of view bar with successor and recently closed filters, plus due

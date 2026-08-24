@@ -59,6 +59,13 @@ def next_local_midnight(reference_at: datetime) -> datetime:
     return datetime.combine(tomorrow, datetime.min.time(), local_reference.tzinfo).astimezone(timezone.utc)
 
 
+def previous_local_midnight() -> datetime:
+    """Return the local midnight that began the previous calendar day in UTC."""
+    local_now = datetime.now().astimezone()
+    today_midnight = datetime.combine(local_now.date(), datetime.min.time(), local_now.tzinfo)
+    return (today_midnight - timedelta(days=1)).astimezone(timezone.utc)
+
+
 class TaskDialog(QDialog):
     """The shared native create/edit dialog for the properties implemented today."""
 
@@ -322,6 +329,90 @@ class TaskRow(QFrame):
         event.accept()
 
 
+class CompletedHistoryRow(QFrame):
+    """A read-only entry in the checked-off-task history window."""
+
+    def __init__(self, task: Task) -> None:
+        super().__init__()
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        title = QLabel(task.title)
+        title_font = title.font()
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title, 1)
+        if task.is_repeating and task.occurrence_at is not None:
+            occurrence = QLabel(f"occurrence · {task.occurrence_at.astimezone().strftime('%Y-%m-%d %H:%M')}")
+            occurrence.setStyleSheet("color: palette(mid);")
+            layout.addWidget(occurrence)
+        if task.notes:
+            notes = QLabel("notes")
+            notes.setToolTip(task.notes)
+            notes.setStyleSheet("color: #5f7184;")
+            layout.addWidget(notes)
+        if task.completed_at is not None:
+            completed = QLabel(task.completed_at.astimezone().strftime("checked off · %Y-%m-%d %H:%M"))
+            completed.setStyleSheet("color: #5f7184;")
+            layout.addWidget(completed)
+
+
+class CompletedHistoryWindow(QWidget):
+    """A separate, filterable view of tasks checked off since a local datetime."""
+
+    def __init__(self, store: TaskStore) -> None:
+        super().__init__()
+        self.store = store
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setWindowTitle("Checked off tasks")
+        self.setMinimumSize(600, 320)
+
+        layout = QVBoxLayout(self)
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Checked off since"))
+        self.since_input = QDateTimeEdit()
+        self.since_input.setCalendarPopup(True)
+        self.since_input.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.since_input.setDateTime(QDateTime.fromSecsSinceEpoch(int(previous_local_midnight().timestamp())))
+        self.since_input.dateTimeChanged.connect(lambda _value: self.refresh())
+        filter_layout.addWidget(self.since_input)
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.task_container = QWidget()
+        self.task_layout = QVBoxLayout(self.task_container)
+        self.task_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        scroll.setWidget(self.task_container)
+        layout.addWidget(scroll, 1)
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Rebuild history whenever the lower datetime bound changes."""
+        while self.task_layout.count():
+            item = self.task_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        since = TaskDialog._utc_value(self.since_input)
+        tasks = self.store.list_completed_since(since)
+        if not tasks:
+            empty = QLabel("No tasks checked off since this time.")
+            empty.setStyleSheet("color: #9aa0a6;")
+            self.task_layout.addWidget(empty)
+            return
+        for task in tasks:
+            self.task_layout.addWidget(CompletedHistoryRow(task))
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Let Escape dismiss this auxiliary history window."""
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class CalmingImageWindow(QWidget):
     """A transient image viewer that closes on any keypress."""
 
@@ -369,6 +460,7 @@ class SpoonfeedWindow(QMainWindow):
         self.last_check_off_at: Optional[datetime] = None
         self.image_prompt_used = False
         self.calming_image_window: Optional[CalmingImageWindow] = None
+        self.completed_history_window: Optional[CompletedHistoryWindow] = None
         self._setup_check_off_sound()
         # The initial view tracks the clock; the picker becomes a fixed as-of
         # view only after the user intentionally changes it.
@@ -399,6 +491,9 @@ class SpoonfeedWindow(QMainWindow):
         new_task = QPushButton("New task (N)")
         new_task.clicked.connect(lambda: self.open_create())
         header.addWidget(new_task)
+        history = QPushButton("Checked off since (T)")
+        history.clicked.connect(self.open_completed_history)
+        header.addWidget(history)
         layout.addLayout(header)
         layout.addWidget(QLabel("Double-click a task to edit. Hold Shift for Delete and Next midnight actions."))
 
@@ -467,6 +562,9 @@ class SpoonfeedWindow(QMainWindow):
                 return True
             if event.key() == Qt.Key.Key_D and self._can_handle_global_key() and self._can_offer_completed_image():
                 self.offer_completed_image()
+                return True
+            if event.key() == Qt.Key.Key_T and self._can_open_new_task():
+                self.open_completed_history()
                 return True
             if event.key() == Qt.Key.Key_Shift and not self.shift_held:
                 self.shift_held = True
@@ -543,6 +641,20 @@ class SpoonfeedWindow(QMainWindow):
     def _clear_calming_image_window(self) -> None:
         """Clear a hidden viewer so the next completion can offer another image."""
         self.calming_image_window = None
+
+    def open_completed_history(self) -> None:
+        """Open the checked-off-only history window, or bring it forward."""
+        if self.completed_history_window is None:
+            self.completed_history_window = CompletedHistoryWindow(self.store)
+            self.completed_history_window.destroyed.connect(self._clear_completed_history_window)
+        self.completed_history_window.refresh()
+        self.completed_history_window.show()
+        self.completed_history_window.raise_()
+        self.completed_history_window.activateWindow()
+
+    def _clear_completed_history_window(self) -> None:
+        """Drop the deleted history-window reference so T creates a fresh view."""
+        self.completed_history_window = None
 
     def _set_custom_as_of_view(self, _value: QDateTime) -> None:
         """Treat a picker edit as an explicit past/future view choice."""
