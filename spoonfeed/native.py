@@ -10,11 +10,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone, tzinfo
 import math
 from pathlib import Path
+import random
 import sys
 from typing import Callable, Optional
 
-from PySide6.QtCore import QDateTime, QEvent, QObject, Qt, QTimer, QUrl
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtCore import QDateTime, QEvent, QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,6 +43,8 @@ from .store import Task, TaskStore, utc_now
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHECK_OFF_SOUND_PATH = PROJECT_ROOT / "hero.m4a"
+CALMING_IMAGE_DIRECTORY = PROJECT_ROOT / ".images"
+SUPPORTED_IMAGE_SUFFIXES = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 
 
 def local_timezone() -> tzinfo:
@@ -302,6 +305,43 @@ class TaskRow(QFrame):
         event.accept()
 
 
+class CalmingImageWindow(QWidget):
+    """A transient image viewer that closes on any keypress."""
+
+    # QWidget.close() normally hides a top-level window instead of destroying
+    # it, so the main window needs an explicit lifecycle notification.
+    image_closed = Signal()
+
+    def __init__(self, image_path: Path) -> None:
+        super().__init__()
+        self.setWindowTitle("A moment for yourself")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        image = QPixmap(str(image_path))
+        label = QLabel()
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        screen = QApplication.primaryScreen().availableGeometry()
+        label.setPixmap(image.scaled(
+            int(screen.width() * 0.8),
+            int(screen.height() * 0.8),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ))
+        layout = QVBoxLayout(self)
+        layout.addWidget(label)
+        self.resize(label.pixmap().size())
+        # An image is a brief reset, not a modal screen that can be forgotten.
+        QTimer.singleShot(60_000, self.close)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        self.close()
+        event.accept()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Tell Spoonfeed it can offer an image after the viewer is dismissed."""
+        self.image_closed.emit()
+        super().closeEvent(event)
+
+
 class SpoonfeedWindow(QMainWindow):
     """Main native window showing active, non-deferred tasks oldest first."""
 
@@ -309,6 +349,9 @@ class SpoonfeedWindow(QMainWindow):
         super().__init__()
         self.store = TaskStore(database_path)
         self.shift_held = False
+        self.last_check_off_at: Optional[datetime] = None
+        self.image_prompt_used = False
+        self.calming_image_window: Optional[CalmingImageWindow] = None
         self._setup_check_off_sound()
         # The initial view tracks the clock; the picker becomes a fixed as-of
         # view only after the user intentionally changes it.
@@ -396,7 +439,7 @@ class SpoonfeedWindow(QMainWindow):
         self.check_off_player.play()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Provide app-wide N and Shift behavior without stealing text input."""
+        """Provide app-wide N, D, and Shift behavior without stealing text input."""
         if event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
             modifiers = event.modifiers()
             has_command = bool(modifiers & (Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier))
@@ -404,6 +447,9 @@ class SpoonfeedWindow(QMainWindow):
                 changed = self.store.redo() if modifiers & Qt.KeyboardModifier.ShiftModifier else self.store.undo()
                 if changed:
                     self.refresh()
+                return True
+            if event.key() == Qt.Key.Key_D and self._can_handle_global_key() and self._can_offer_completed_image():
+                self.offer_completed_image()
                 return True
             if event.key() == Qt.Key.Key_Shift and not self.shift_held:
                 self.shift_held = True
@@ -420,6 +466,62 @@ class SpoonfeedWindow(QMainWindow):
     def _can_open_new_task(self) -> bool:
         focus = QApplication.focusWidget()
         return not isinstance(focus, (QLineEdit, QTextEdit, QDateTimeEdit)) and QApplication.activeModalWidget() is None
+
+    def _can_handle_global_key(self) -> bool:
+        """Allow D unless a dialog or the image window currently owns input.
+
+        Date editors can retain focus after a row refresh, so this completion
+        action must not be restricted to a particular focused child widget.
+        """
+        return QApplication.activeModalWidget() is None and self.calming_image_window is None
+
+    def _can_offer_completed_image(self) -> bool:
+        """The D flow is available once during the minute after a check-off."""
+        return (
+            self.last_check_off_at is not None
+            and not self.image_prompt_used
+            and utc_now() - self.last_check_off_at <= timedelta(minutes=1)
+        )
+
+    def offer_completed_image(self) -> None:
+        """Ask once whether to display a random calming image after completion."""
+        if not self._can_offer_completed_image():
+            return
+        # Pressing D consumes this completion's offer even if the user cancels.
+        self.image_prompt_used = True
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Display image?")
+        prompt.setText("Display a calming image?")
+        confirm = prompt.addButton("Confirm", QMessageBox.ButtonRole.AcceptRole)
+        prompt.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        prompt.setDefaultButton(confirm)
+        prompt.exec()
+        if prompt.clickedButton() is confirm:
+            self.show_random_calming_image()
+
+    def show_random_calming_image(self) -> None:
+        """Open a randomly selected usable image from the ignored .images folder."""
+        if not CALMING_IMAGE_DIRECTORY.is_dir():
+            QMessageBox.information(self, "No images found", "Add images to .images to use this feature.")
+            return
+        candidates = [
+            path for path in CALMING_IMAGE_DIRECTORY.rglob("*")
+            if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+        ]
+        random.shuffle(candidates)
+        for image_path in candidates:
+            if not QPixmap(str(image_path)).isNull():
+                self.calming_image_window = CalmingImageWindow(image_path)
+                self.calming_image_window.image_closed.connect(self._clear_calming_image_window)
+                self.calming_image_window.show()
+                self.calming_image_window.activateWindow()
+                self.calming_image_window.setFocus()
+                return
+        QMessageBox.information(self, "No images found", "No supported image files were found in .images.")
+
+    def _clear_calming_image_window(self) -> None:
+        """Clear a hidden viewer so the next completion can offer another image."""
+        self.calming_image_window = None
 
     def _set_custom_as_of_view(self, _value: QDateTime) -> None:
         """Treat a picker edit as an explicit past/future view choice."""
@@ -540,6 +642,8 @@ class SpoonfeedWindow(QMainWindow):
         else:
             self.store.complete_task(task.id, occurrence_at=task.occurrence_at)
             self.play_check_off_sound()
+            self.last_check_off_at = utc_now()
+            self.image_prompt_used = False
         self.refresh()
 
     def defer_task(self, task: Task) -> None:
