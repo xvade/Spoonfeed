@@ -1,0 +1,1 @@
+You're making Spoonfeed, a task manager. Document your code, that means writing inline comments, README.md, TODO.md etc. Whenever you finish working on a prompt, someone else should be able to come along and pick up your efforts where you left off. Use TODO.md to this end.

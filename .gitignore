@@ -1,0 +1,6 @@
+# Local runtime data and Python's generated files should not be committed.
+spoonfeed.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

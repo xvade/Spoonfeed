@@ -1,0 +1,2 @@
+# Qt for Python supplies Spoonfeed's native desktop widgets.
+PySide6==6.11.2

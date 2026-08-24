@@ -1,0 +1,1 @@
+"""Spoonfeed's application package."""
