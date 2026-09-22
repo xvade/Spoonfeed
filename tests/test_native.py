@@ -9,7 +9,7 @@ import unittest
 # Must be selected before Qt creates its single QApplication instance.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
@@ -32,6 +32,24 @@ class NativeWindowTests(unittest.TestCase):
 
             self.assertEqual(window.windowTitle(), "Spoonfeed")
             self.assertEqual(window.task_layout.count(), 1)
+            window.close()
+
+    def test_task_star_toggles_from_outline_to_yellow_fill(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            task = window.store.create_task("Star me")
+            window.refresh()
+
+            star = window.task_container.findChild(QToolButton, "task-star")
+            self.assertIsNotNone(star)
+            self.assertEqual(star.text(), "☆")  # type: ignore[union-attr]
+            star.click()  # type: ignore[union-attr]
+            self.application.processEvents()
+
+            filled_stars = window.task_container.findChildren(QToolButton, "task-star")
+            self.assertTrue(window.store.is_starred(task.id))
+            self.assertEqual(filled_stars[-1].text(), "★")
+            self.assertTrue(window.star_reset_timer.isActive())
             window.close()
 
     def test_window_arms_refresh_for_a_deferred_task(self) -> None:

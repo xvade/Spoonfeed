@@ -1,6 +1,6 @@
 """Behavior tests for the SQLite task lifecycle."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -82,6 +82,26 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual([task.title for task in completed], ["Recurring", "Normal"])
         self.assertEqual(completed[0].occurrence_at, NOW)
         self.assertEqual(completed[0].completed_at, NOW + timedelta(minutes=3))
+
+    def test_daily_stars_toggle_per_task_or_occurrence_and_reset_on_a_new_date(self) -> None:
+        day = date(2026, 8, 21)
+        task = self.store.create_task("Daily star", created_at=NOW)
+        series = self.store.create_task(
+            "Recurring star",
+            repeat_interval_seconds=3_600,
+            repeat_start_at=NOW,
+            created_at=NOW,
+        )
+
+        self.assertTrue(self.store.toggle_star(task.id, on_date=day))
+        self.assertTrue(self.store.is_starred(task.id, on_date=day))
+        self.assertFalse(self.store.toggle_star(task.id, on_date=day))
+        self.assertFalse(self.store.is_starred(task.id, on_date=day))
+
+        self.assertTrue(self.store.toggle_star(series.id, occurrence_at=NOW, on_date=day))
+        self.assertTrue(self.store.is_starred(series.id, occurrence_at=NOW, on_date=day))
+        self.assertFalse(self.store.is_starred(series.id, occurrence_at=NOW + timedelta(hours=1), on_date=day))
+        self.assertFalse(self.store.is_starred(series.id, occurrence_at=NOW, on_date=day + timedelta(days=1)))
 
     def test_closed_tasks_cannot_be_edited_or_closed_again(self) -> None:
         task = self.store.create_task("One-shot", created_at=NOW)

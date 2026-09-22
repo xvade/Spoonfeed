@@ -8,7 +8,7 @@ place to extend the data model.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 from typing import Optional
@@ -50,6 +50,8 @@ class Task:
     # Repeating occurrences form an implicit chain. This is populated only for
     # virtual occurrence rows and points to the preceding scheduled instance.
     occurrence_predecessor_at: Optional[datetime] = None
+    # Daily stars are presentation state rather than a permanent task property.
+    starred: bool = False
     parent_id: Optional[int] = None
     depth: int = 0
     hidden_child_count: int = 0
@@ -76,8 +78,8 @@ class TaskStore:
         # tests; callers must still serialize database access.
         self.connection = sqlite3.connect(str(database_path), check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
-        self._undo_stack: list[tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]] = []
-        self._redo_stack: list[tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]] = []
+        self._undo_stack: list[tuple[object, object]] = []
+        self._redo_stack: list[tuple[object, object]] = []
         self.connection.execute("PRAGMA foreign_keys = ON")
         self._create_schema()
 
@@ -139,6 +141,16 @@ class TaskStore:
             """
         )
         self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_task_stars (
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                occurrence_at TEXT NOT NULL DEFAULT '',
+                starred_on TEXT NOT NULL,
+                PRIMARY KEY(task_id, occurrence_at)
+            )
+            """
+        )
+        self.connection.execute(
             "CREATE INDEX IF NOT EXISTS tasks_visible_index "
             "ON tasks(completed_at, deleted_at, defer_at, created_at)"
         )
@@ -153,6 +165,10 @@ class TaskStore:
         self.connection.execute(
             "CREATE INDEX IF NOT EXISTS deferred_occurrences_defer_index "
             "ON deferred_occurrences(defer_at)"
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS daily_task_stars_date_index "
+            "ON daily_task_stars(starred_on)"
         )
         self.connection.execute("CREATE INDEX IF NOT EXISTS tasks_parent_index ON tasks(parent_id, created_at)")
         self.connection.execute("CREATE INDEX IF NOT EXISTS tasks_predecessor_index ON tasks(predecessor_id)")
@@ -271,7 +287,54 @@ class TaskStore:
                 (to_storage(recent_closed_since), stamp, to_storage(recent_closed_since), stamp),
             ).fetchall()
             visible.extend(self._task_from_row(row) for row in closed_rows)
-        return visible
+        return self._with_daily_stars(visible)
+
+    def toggle_star(
+        self, task_id: int, *, occurrence_at: Optional[datetime] = None, on_date: Optional[date] = None
+    ) -> bool:
+        """Toggle one task's star for a local calendar day and return its state.
+
+        Repeating instances use their scheduled occurrence timestamp as part of
+        the key, so starring one occurrence never stars the entire series.
+        """
+        task = self.get_task(task_id)
+        if not task.is_active:
+            raise ValueError("Only active tasks can be starred")
+        occurrence_key = to_storage(occurrence_at) if occurrence_at is not None else ""
+        day = (on_date or datetime.now().astimezone().date()).isoformat()
+        row = self.connection.execute(
+            "SELECT starred_on FROM daily_task_stars WHERE task_id = ? AND occurrence_at = ?",
+            (task_id, occurrence_key),
+        ).fetchone()
+        if row is not None and row["starred_on"] == day:
+            self.connection.execute(
+                "DELETE FROM daily_task_stars WHERE task_id = ? AND occurrence_at = ?",
+                (task_id, occurrence_key),
+            )
+            self.connection.commit()
+            return False
+        self.connection.execute(
+            """
+            INSERT INTO daily_task_stars(task_id, occurrence_at, starred_on)
+            VALUES (?, ?, ?)
+            ON CONFLICT(task_id, occurrence_at) DO UPDATE SET starred_on = excluded.starred_on
+            """,
+            (task_id, occurrence_key, day),
+        )
+        self.connection.commit()
+        return True
+
+    def is_starred(
+        self, task_id: int, *, occurrence_at: Optional[datetime] = None, on_date: Optional[date] = None
+    ) -> bool:
+        """Whether a task or virtual occurrence is starred on a local day."""
+        occurrence_key = to_storage(occurrence_at) if occurrence_at is not None else ""
+        day = (on_date or datetime.now().astimezone().date()).isoformat()
+        row = self.connection.execute(
+            "SELECT 1 FROM daily_task_stars WHERE task_id = ? AND occurrence_at = ? AND starred_on = ?",
+            (task_id, occurrence_key, day),
+        ).fetchone()
+        return row is not None
 
     def list_completed_since(self, since: datetime) -> list[Task]:
         """Return checked-off, non-deleted tasks since ``since`` newest first.
@@ -551,7 +614,7 @@ class TaskStore:
             raise ValueError("Cannot defer a task until or past an affected due date")
 
     def _snapshot(self) -> tuple[
-        tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]
+        tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]
     ]:
         """Capture mutable task tables for in-session undo/redo restoration."""
         tasks = tuple(tuple(row) for row in self.connection.execute("SELECT * FROM tasks ORDER BY id"))
@@ -563,10 +626,14 @@ class TaskStore:
             tuple(row)
             for row in self.connection.execute("SELECT * FROM deferred_occurrences ORDER BY task_id, occurrence_at")
         )
-        return tasks, occurrences, deferred_occurrences
+        daily_stars = tuple(
+            tuple(row)
+            for row in self.connection.execute("SELECT * FROM daily_task_stars ORDER BY task_id, occurrence_at")
+        )
+        return tasks, occurrences, deferred_occurrences, daily_stars
 
     def _record_action(
-        self, before: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]
+        self, before: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]
     ) -> None:
         """Store a completed mutation and invalidate redo after a divergent action."""
         after = self._snapshot()
@@ -575,13 +642,14 @@ class TaskStore:
             self._redo_stack.clear()
 
     def _restore_snapshot(
-        self, snapshot: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]
+        self, snapshot: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]
     ) -> None:
         """Replace mutable tables with a prior snapshot while honoring self FKs."""
-        tasks, occurrences, deferred_occurrences = snapshot
+        tasks, occurrences, deferred_occurrences, daily_stars = snapshot
         self.connection.execute("PRAGMA defer_foreign_keys = ON")
         self.connection.execute("DELETE FROM completed_occurrences")
         self.connection.execute("DELETE FROM deferred_occurrences")
+        self.connection.execute("DELETE FROM daily_task_stars")
         self.connection.execute("DELETE FROM tasks")
         if tasks:
             placeholders = ", ".join("?" for _ in tasks[0])
@@ -590,6 +658,8 @@ class TaskStore:
             self.connection.executemany("INSERT INTO completed_occurrences VALUES (?, ?, ?)", occurrences)
         if deferred_occurrences:
             self.connection.executemany("INSERT INTO deferred_occurrences VALUES (?, ?, ?)", deferred_occurrences)
+        if daily_stars:
+            self.connection.executemany("INSERT INTO daily_task_stars VALUES (?, ?, ?)", daily_stars)
         self.connection.commit()
 
     @staticmethod
@@ -673,6 +743,22 @@ class TaskStore:
                 break
             next_index += 1
         return min([scheduled_candidate, *delayed_candidates])
+
+    def _with_daily_stars(self, tasks: list[Task]) -> list[Task]:
+        """Decorate visible tasks with stars belonging to today's local date."""
+        day = datetime.now().astimezone().date().isoformat()
+        rows = self.connection.execute(
+            "SELECT task_id, occurrence_at FROM daily_task_stars WHERE starred_on = ?",
+            (day,),
+        ).fetchall()
+        starred_keys = {(row["task_id"], row["occurrence_at"]) for row in rows}
+        return [
+            replace(
+                task,
+                starred=(task.id, to_storage(task.occurrence_at) if task.occurrence_at is not None else "") in starred_keys,
+            )
+            for task in tasks
+        ]
 
     def _order_visible_tasks(self, visible_normal: list[Task], visible_repeats: list[Task]) -> list[Task]:
         """Nest visible children under visible parents and count hidden children.

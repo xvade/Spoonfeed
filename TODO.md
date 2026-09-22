@@ -45,6 +45,9 @@
 - Consecutive repeating occurrences now form an implicit predecessor chain:
   only the next incomplete occurrence shows normally; Show successor tasks
   reveals later occurrences and marks their previous-occurrence dependency.
+- Added daily stars at the left of active task rows. A click changes an outline
+  to yellow for the current local date; a midnight timer refreshes the UI to
+  reset them, and repeating occurrences keep independent star state.
 - Added an optional post-completion calming-image flow. `.images/` is ignored;
   for one minute after a check-off, `D` offers one random image and works only
   once until the next check-off. The image window closes on any keypress or

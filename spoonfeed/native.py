@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -250,6 +251,7 @@ class TaskRow(QFrame):
         on_close: Callable[[Task], None],
         on_defer: Callable[[Task], None],
         on_add_subtask: Callable[[Task], None],
+        on_toggle_star: Callable[[Task], None],
         predecessor_title: Optional[str] = None,
         successor_titles: Optional[list[str]] = None,
         occurrence_predecessor_at: Optional[datetime] = None,
@@ -262,6 +264,18 @@ class TaskRow(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10 + task.depth * 24, 8, 10, 8)
 
+        if task.is_active:
+            star = QToolButton()
+            star.setObjectName("task-star")
+            star.setText("★" if task.starred else "☆")
+            star.setToolTip("Remove daily star" if task.starred else "Add daily star")
+            star.setAutoRaise(True)
+            star.setStyleSheet(
+                "QToolButton { border: none; font-size: 21px; padding: 0 4px; "
+                f"color: {'#e0ad00' if task.starred else '#6f7782'}; }}"
+            )
+            star.clicked.connect(lambda: on_toggle_star(task))
+            layout.addWidget(star)
         title = QLabel(task.title)
         title_font = title.font()
         title_font.setBold(True)
@@ -483,6 +497,10 @@ class SpoonfeedWindow(QMainWindow):
         # than on a polling cadence that can leave it hidden for nearly a minute.
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.timeout.connect(self.refresh)
+        self.star_reset_timer = QTimer(self)
+        self.star_reset_timer.setSingleShot(True)
+        self.star_reset_timer.timeout.connect(self._reset_daily_stars)
+        self._schedule_daily_star_reset()
         self.refresh()
 
     def _build_layout(self) -> None:
@@ -739,6 +757,7 @@ class SpoonfeedWindow(QMainWindow):
                         self.close_task,
                         self.defer_task,
                         self.open_create,
+                        self.toggle_star,
                         predecessor_titles.get(task.id),
                         successor_titles.get(task.id),
                         task.occurrence_predecessor_at if self.show_successors_input.isChecked() else None,
@@ -767,6 +786,20 @@ class SpoonfeedWindow(QMainWindow):
         # precision, then cap the timer so a long defer remains interruptible.
         milliseconds = math.ceil((next_defer_at - point_in_time).total_seconds() * 1000) + 50
         self.refresh_timer.start(max(1_000, min(milliseconds, 21_600_000)))
+
+    def _schedule_daily_star_reset(self) -> None:
+        """Refresh task rows immediately after the next local midnight."""
+        local_now = datetime.now().astimezone()
+        next_midnight = datetime.combine(
+            (local_now + timedelta(days=1)).date(), datetime.min.time(), local_now.tzinfo
+        )
+        milliseconds = math.ceil((next_midnight - local_now).total_seconds() * 1000) + 50
+        self.star_reset_timer.start(max(1_000, milliseconds))
+
+    def _reset_daily_stars(self) -> None:
+        """Let the new local date render every daily star as an outline again."""
+        self.refresh()
+        self._schedule_daily_star_reset()
 
     def open_create(self, parent_task: Optional[Task] = None) -> None:
         visible_ids = self._visible_relationship_task_ids()
@@ -831,6 +864,11 @@ class SpoonfeedWindow(QMainWindow):
             self.play_check_off_sound()
             self.last_check_off_at = utc_now()
             self.image_prompt_used = False
+        self.refresh()
+
+    def toggle_star(self, task: Task) -> None:
+        """Toggle this task or recurring occurrence's star for the current day."""
+        self.store.toggle_star(task.id, occurrence_at=task.occurrence_at)
         self.refresh()
 
     def defer_task(self, task: Task) -> None:

@@ -35,6 +35,10 @@ Repeating occurrences are sequential by default: the next occurrence appears
 after its preceding occurrence is checked off. **Show successor tasks** reveals
 later blocked occurrences and marks their previous-occurrence dependency.
 
+Each active task has a daily star on its left. Click its outline to fill it
+yellow; stars reset at the next local midnight. Repeating occurrences have
+independent stars.
+
 When **Show successor tasks** is enabled, dependency cues show a successor's
 predecessor (`after: …`) and the successors a task unlocks (`unlocks: …`).
 
