@@ -78,6 +78,7 @@ class TaskDialog(QDialog):
         parent_choices: Optional[list[Task]] = None,
         predecessor_choices: Optional[list[Task]] = None,
         selected_parent_id: Optional[int] = None,
+        selected_predecessor_id: Optional[int] = None,
         low_energy: bool = False,
     ) -> None:
         super().__init__(parent)
@@ -161,9 +162,10 @@ class TaskDialog(QDialog):
         self.predecessor_input.addItem("No predecessor", None)
         for candidate in predecessor_choices or []:
             self.predecessor_input.addItem(candidate.title, candidate.id)
-        if task is not None and task.predecessor_id is not None:
+        wanted_predecessor = task.predecessor_id if task is not None else selected_predecessor_id
+        if wanted_predecessor is not None:
             for index in range(self.predecessor_input.count()):
-                if self.predecessor_input.itemData(index) == task.predecessor_id:
+                if self.predecessor_input.itemData(index) == wanted_predecessor:
                     self.predecessor_input.setCurrentIndex(index)
                     break
         layout.addWidget(self.predecessor_input)
@@ -273,6 +275,7 @@ class TaskRow(QFrame):
         on_close: Callable[[Task], None],
         on_defer: Callable[[Task], None],
         on_add_subtask: Callable[[Task], None],
+        on_add_successor: Callable[[Task], None],
         on_toggle_star: Callable[[Task], None],
         predecessor_title: Optional[str] = None,
         successor_titles: Optional[list[str]] = None,
@@ -379,9 +382,11 @@ class TaskRow(QFrame):
         defer.clicked.connect(lambda: on_defer(task))
         layout.addWidget(defer)
         if not task.is_repeating:
-            add_subtask = QPushButton("Add subtask")
-            add_subtask.clicked.connect(lambda: on_add_subtask(task))
-            layout.addWidget(add_subtask)
+            add_related = QPushButton("Add successor" if shift_held else "Add subtask")
+            add_related.clicked.connect(
+                lambda: on_add_successor(task) if shift_held else on_add_subtask(task)
+            )
+            layout.addWidget(add_related)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.MouseButtonDblClick:
@@ -566,7 +571,7 @@ class SpoonfeedWindow(QMainWindow):
         history.clicked.connect(self.open_completed_history)
         header.addWidget(history)
         layout.addLayout(header)
-        layout.addWidget(QLabel("Double-click a task to edit. Hold Shift for Delete and Next midnight actions."))
+        layout.addWidget(QLabel("Double-click a task to edit. Hold Shift for Delete, Next midnight, and Add successor actions."))
 
         view_bar = QHBoxLayout()
         view_bar.addWidget(QLabel("View as of"))
@@ -831,6 +836,7 @@ class SpoonfeedWindow(QMainWindow):
                         self.close_task,
                         self.defer_task,
                         self.open_create,
+                        self.open_create_successor,
                         self.toggle_star,
                         predecessor_titles.get(task.id),
                         successor_titles.get(task.id),
@@ -885,13 +891,20 @@ class SpoonfeedWindow(QMainWindow):
         """Select a hotkey's category, or clear it when pressed a second time."""
         self.set_energy_filter(None if self.energy_filter is low_energy else low_energy)
 
-    def open_create(self, parent_task: Optional[Task] = None, *, low_energy: bool = False) -> None:
+    def open_create(
+        self,
+        parent_task: Optional[Task] = None,
+        *,
+        predecessor_task: Optional[Task] = None,
+        low_energy: bool = False,
+    ) -> None:
         visible_ids = self._visible_relationship_task_ids()
         dialog = TaskDialog(
             self,
             parent_choices=[task for task in self.store.list_parent_candidates() if task.id in visible_ids],
             predecessor_choices=[task for task in self.store.list_predecessor_candidates() if task.id in visible_ids],
             selected_parent_id=parent_task.id if parent_task is not None else None,
+            selected_predecessor_id=predecessor_task.id if predecessor_task is not None else None,
             low_energy=low_energy,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -912,6 +925,10 @@ class SpoonfeedWindow(QMainWindow):
                 QMessageBox.warning(self, "Could not save task", str(error))
                 return
             self.refresh()
+
+    def open_create_successor(self, predecessor_task: Task) -> None:
+        """Open a new-task dialog with the visible row chosen as its predecessor."""
+        self.open_create(predecessor_task=predecessor_task)
 
     def open_edit(self, task: Task) -> None:
         visible_ids = self._visible_relationship_task_ids()

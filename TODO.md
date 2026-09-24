@@ -49,6 +49,8 @@
   the next one. The recurring-task edit dialog has **Delete entire series** for
   the separate full-series action; occurrence deletions support undo/redo and
   appear in the recently-closed view.
+- Holding Shift now changes the regular-task row action from **Add subtask** to
+  **Add successor**, preselecting that row as the new task's predecessor.
 - Added daily stars at the left of active task rows. A click changes an outline
   to yellow for the current local date; a midnight timer refreshes the UI to
   reset them, and repeating occurrences keep independent star state.

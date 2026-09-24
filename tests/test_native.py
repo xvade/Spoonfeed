@@ -16,7 +16,7 @@ from PySide6.QtTest import QTest
 from unittest.mock import patch
 
 from spoonfeed.native import TaskDialog, TaskRow, SpoonfeedWindow, next_local_midnight, previous_local_midnight
-from spoonfeed.store import utc_now
+from spoonfeed.store import Task, utc_now
 
 
 class NativeWindowTests(unittest.TestCase):
@@ -152,6 +152,39 @@ class NativeWindowTests(unittest.TestCase):
             with patch("spoonfeed.native.TaskDialog", return_value=DeleteSeriesDialog()):
                 window.open_edit(next_occurrence)
             self.assertFalse(window.store.get_task(series.id).is_active)
+            window.close()
+
+    def test_shift_changes_add_subtask_to_a_preselected_successor_action(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            task = window.store.create_task("First")
+            window.refresh()
+            normal_buttons = [
+                button.text()
+                for row in self._visible_rows(window)
+                for button in row.findChildren(QPushButton)
+            ]
+            self.assertIn("Add subtask", normal_buttons)
+
+            calls: list[Task] = []
+            window.open_create_successor = lambda predecessor: calls.append(predecessor)  # type: ignore[method-assign]
+            window.shift_held = True
+            window.refresh()
+            successor_button = next(
+                button
+                for row in self._visible_rows(window)
+                for button in row.findChildren(QPushButton)
+                if button.text() == "Add successor"
+            )
+            successor_button.click()
+            self.assertEqual(calls, [task])
+
+            dialog = TaskDialog(
+                window,
+                predecessor_choices=[task],
+                selected_predecessor_id=task.id,
+            )
+            self.assertEqual(dialog.predecessor_input.currentData(), task.id)
             window.close()
 
     @staticmethod

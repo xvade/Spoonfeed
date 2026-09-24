@@ -92,6 +92,8 @@ repeat intervals if their old application used a different time unit.
 - Choose a **Parent task** to make a nested subtask. Parents cannot be completed
   or deleted until all descendants are closed; hidden active children are shown
   as a count below the visible child block.
+- Hold Shift to change a task row's **Add subtask** action into **Add successor**,
+  which opens the form with that task already selected as predecessor.
 - Choose a **Predecessor task** to keep a task hidden until that predecessor is
   completed or deleted. Spoonfeed rejects dependency cycles and parent-conflicting
   dependencies.
