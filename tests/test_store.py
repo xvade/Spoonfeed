@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -43,6 +44,67 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(updated.title, "Publish")
         self.assertEqual(updated.notes, "Review links")
         self.assertEqual(updated.defer_at, NOW + timedelta(days=1))
+
+    def test_low_energy_status_persists_and_filters_visible_tasks(self) -> None:
+        low = self.store.create_task("Easy win", created_at=NOW, low_energy=True)
+        other = self.store.create_task("Deep work", created_at=NOW)
+        repeating = self.store.create_task(
+            "Daily stretch",
+            created_at=NOW,
+            repeat_interval_seconds=3_600,
+            repeat_start_at=NOW,
+            low_energy=True,
+        )
+
+        self.assertTrue(self.store.get_task(low.id).low_energy)
+        self.assertFalse(self.store.get_task(other.id).low_energy)
+        self.assertEqual(
+            {task.id for task in self.store.list_visible(NOW, low_energy=True)},
+            {low.id, repeating.id},
+        )
+        self.assertEqual(
+            [task.id for task in self.store.list_visible(NOW, low_energy=False)],
+            [other.id],
+        )
+
+        # Callers that do not yet know about energy keep the existing setting.
+        preserved = self.store.update_task(low.id, "Still easy", "", NOW)
+        changed = self.store.update_task(other.id, "Now easy", "", NOW, low_energy=True)
+        self.assertTrue(preserved.low_energy)
+        self.assertTrue(changed.low_energy)
+
+    def test_low_energy_migration_leaves_existing_tasks_non_low_energy(self) -> None:
+        legacy_path = Path(self.directory.name) / "legacy.db"
+        connection = sqlite3.connect(legacy_path)
+        connection.execute(
+            """
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                defer_at TEXT NOT NULL,
+                completed_at TEXT,
+                deleted_at TEXT,
+                repeat_interval_seconds INTEGER,
+                repeat_start_at TEXT,
+                parent_id INTEGER REFERENCES tasks(id),
+                predecessor_id INTEGER REFERENCES tasks(id),
+                due_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO tasks(title, notes, created_at, defer_at) VALUES (?, ?, ?, ?)",
+            ("Existing task", "", NOW.isoformat(), NOW.isoformat()),
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = TaskStore(legacy_path)
+        self.addCleanup(migrated.close)
+        self.assertIn("low_energy", {row["name"] for row in migrated.connection.execute("PRAGMA table_info(tasks)")})
+        self.assertFalse(migrated.get_task(1).low_energy)
 
     def test_next_deferred_time_ignores_closed_and_already_visible_tasks(self) -> None:
         visible = self.store.create_task("Visible", created_at=NOW)

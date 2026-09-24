@@ -11,11 +11,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 from PySide6.QtCore import QDateTime, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPalette, QPixmap
 from PySide6.QtTest import QTest
 from unittest.mock import patch
 
-from spoonfeed.native import SpoonfeedWindow, next_local_midnight, previous_local_midnight
+from spoonfeed.native import TaskDialog, TaskRow, SpoonfeedWindow, next_local_midnight, previous_local_midnight
 from spoonfeed.store import utc_now
 
 
@@ -51,6 +51,72 @@ class NativeWindowTests(unittest.TestCase):
             self.assertEqual(filled_stars[-1].text(), "★")
             self.assertTrue(window.star_reset_timer.isActive())
             window.close()
+
+    def test_low_energy_dialog_defaults_and_task_row_tint(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            low_dialog = TaskDialog(window, low_energy=True)
+            self.assertTrue(low_dialog.low_energy_input.isChecked())
+
+            task = window.store.create_task("Gentle task", low_energy=True)
+            edit_dialog = TaskDialog(window, task)
+            self.assertTrue(edit_dialog.low_energy_input.isChecked())
+            window.refresh()
+
+            rows = [
+                window.task_layout.itemAt(index).widget()
+                for index in range(window.task_layout.count())
+            ]
+            low_row = next(row for row in rows if isinstance(row, TaskRow))
+            self.assertEqual(low_row.objectName(), "low-energy-task")
+            self.assertTrue(low_row.autoFillBackground())
+            self.assertNotEqual(
+                low_row.palette().color(QPalette.ColorRole.Window),
+                window.palette().color(QPalette.ColorRole.Window),
+            )
+            window.close()
+
+    def test_energy_switch_and_hotkeys_filter_or_clear_the_home_view(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            low = window.store.create_task("Easy", low_energy=True)
+            other = window.store.create_task("Demanding")
+            window.show()
+
+            QTest.keyClick(window, Qt.Key.Key_H)
+            self.application.processEvents()
+            self.assertFalse(window.energy_filter)
+            self.assertTrue(window.energy_filter_buttons[False].isChecked())
+            self.assertEqual(
+                [row.task.id for row in self._visible_rows(window)],
+                [other.id],
+            )
+
+            QTest.keyClick(window, Qt.Key.Key_H)
+            self.application.processEvents()
+            self.assertIsNone(window.energy_filter)
+            self.assertTrue(window.energy_filter_buttons[None].isChecked())
+
+            QTest.keyClick(window, Qt.Key.Key_L)
+            self.application.processEvents()
+            self.assertTrue(window.energy_filter)
+            self.assertEqual([row.task.id for row in self._visible_rows(window)], [low.id])
+
+            calls: list[bool] = []
+            window.open_create = lambda parent_task=None, *, low_energy=False: calls.append(low_energy)  # type: ignore[method-assign]
+            QTest.keyClick(window, Qt.Key.Key_M)
+            self.application.processEvents()
+            self.assertEqual(calls, [True])
+            window.close()
+
+    @staticmethod
+    def _visible_rows(window: SpoonfeedWindow) -> list[TaskRow]:
+        """Read just the current layout, avoiding Qt widgets pending deletion."""
+        return [
+            row
+            for index in range(window.task_layout.count())
+            if isinstance(row := window.task_layout.itemAt(index).widget(), TaskRow)
+        ]
 
     def test_window_arms_refresh_for_a_deferred_task(self) -> None:
         with TemporaryDirectory() as directory:

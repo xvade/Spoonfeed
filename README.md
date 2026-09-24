@@ -39,6 +39,10 @@ Each active task has a daily star on its left. Click its outline to fill it
 yellow; stars reset at the next local midnight. Repeating occurrences have
 independent stars.
 
+Mark a task **Low energy** in its form to give it a gentle blue tint. The
+three-way **Energy** control filters the home view between all tasks, low-energy
+tasks, and other tasks.
+
 When **Show successor tasks** is enabled, dependency cues show a successor's
 predecessor (`after: …`) and the successors a task unlocks (`unlocks: …`).
 
@@ -68,6 +72,9 @@ repeat intervals if their old application used a different time unit.
 
 - Press `N`, or click **New task**, to open the task form. Press Return while
   entering the task name to save it.
+- Press `M` to open a new task form with **Low energy task** already selected.
+- Press `L` to show only low-energy tasks, or press it again to return to all
+  tasks. `H` similarly switches to—and clears—the non-low-energy task filter.
 - Press `T`, or click **Checked off since**, to open the completed-task history
   window. Adjust its datetime to change the lower bound.
 - The main list contains active tasks whose defer time has passed, ordered by
@@ -90,7 +97,8 @@ repeat intervals if their old application used a different time unit.
 - Use Cmd+Z / Cmd+Shift+Z (or Ctrl equivalents) to undo and redo task changes
   during the current application session.
 - The view bar lets you inspect a past or future point, reveal successor tasks,
-  and include recently completed/deleted tasks from a chosen time.
+  include recently completed/deleted tasks from a chosen time, and switch among
+  all, low-energy, or non-low-energy tasks.
 - Enable **Set due date** in the task form to prevent any defer action that
   would hide the task—or an affected subtask or successor—at/after its deadline.
 

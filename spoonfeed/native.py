@@ -15,10 +15,11 @@ import sys
 from typing import Callable, Optional
 
 from PySide6.QtCore import QDateTime, QEvent, QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QPixmap
+from PySide6.QtGui import QColor, QCloseEvent, QKeyEvent, QMouseEvent, QPalette, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
@@ -77,6 +78,7 @@ class TaskDialog(QDialog):
         parent_choices: Optional[list[Task]] = None,
         predecessor_choices: Optional[list[Task]] = None,
         selected_parent_id: Optional[int] = None,
+        low_energy: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("New task" if task is None else "Edit task")
@@ -94,6 +96,11 @@ class TaskDialog(QDialog):
         self.notes_input = QTextEdit(task.notes if task else "")
         self.notes_input.setMinimumHeight(120)
         layout.addWidget(self.notes_input)
+
+        self.low_energy_input = QCheckBox("Low energy task")
+        self.low_energy_input.setChecked(task.low_energy if task is not None else low_energy)
+        self.low_energy_input.setToolTip("Show this task with a subtle blue tint")
+        layout.addWidget(self.low_energy_input)
 
         self.defer_label = QLabel("Show after (local time)")
         layout.addWidget(self.defer_label)
@@ -222,12 +229,14 @@ class TaskDialog(QDialog):
             selected = selected.replace(tzinfo=local_timezone())
         return selected.astimezone(timezone.utc)
 
-    def values(self) -> tuple[str, str, datetime, Optional[int], Optional[datetime], Optional[int], Optional[int], Optional[datetime]]:
+    def values(self) -> tuple[
+        str, str, datetime, Optional[int], Optional[datetime], Optional[int], Optional[int], Optional[datetime], bool
+    ]:
         """Return one-off or repeating schedule values in TaskStore's UTC format."""
         if self.repeat_checkbox.isChecked():
             start = self._utc_value(self.repeat_start_input)
             interval_seconds = self.repeat_interval.value() * self.repeat_unit.currentData()
-            return self.title_input.text(), self.notes_input.toPlainText(), start, interval_seconds, start, None, self.predecessor_input.currentData(), self._utc_value(self.due_input) if self.due_checkbox.isChecked() else None
+            return self.title_input.text(), self.notes_input.toPlainText(), start, interval_seconds, start, None, self.predecessor_input.currentData(), self._utc_value(self.due_input) if self.due_checkbox.isChecked() else None, self.low_energy_input.isChecked()
         return (
             self.title_input.text(),
             self.notes_input.toPlainText(),
@@ -237,6 +246,7 @@ class TaskDialog(QDialog):
             self.parent_input.currentData(),
             self.predecessor_input.currentData(),
             self._utc_value(self.due_input) if self.due_checkbox.isChecked() else None,
+            self.low_energy_input.isChecked(),
         )
 
 
@@ -261,6 +271,26 @@ class TaskRow(QFrame):
         self.on_edit = on_edit
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setFrameShadow(QFrame.Shadow.Raised)
+        if task.low_energy:
+            # A tint communicates that this is suitable for a low-capacity
+            # moment without forcing a light color into a dark system theme.
+            self.setObjectName("low-energy-task")
+            palette = self.palette()
+            base = palette.color(QPalette.ColorRole.Window)
+            blue = QColor("#4c9dce")
+            # Blend a small amount of blue into the current theme background.
+            # That preserves the contrast Qt already chose for task text.
+            tint_strength = 0.12
+            palette.setColor(
+                QPalette.ColorRole.Window,
+                QColor(
+                    round(base.red() * (1 - tint_strength) + blue.red() * tint_strength),
+                    round(base.green() * (1 - tint_strength) + blue.green() * tint_strength),
+                    round(base.blue() * (1 - tint_strength) + blue.blue() * tint_strength),
+                ),
+            )
+            self.setPalette(palette)
+            self.setAutoFillBackground(True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10 + task.depth * 24, 8, 10, 8)
 
@@ -488,6 +518,8 @@ class SpoonfeedWindow(QMainWindow):
         # The initial view tracks the clock; the picker becomes a fixed as-of
         # view only after the user intentionally changes it.
         self.viewing_now = True
+        # None means show all tasks; booleans select one energy category.
+        self.energy_filter: Optional[bool] = None
         self.setWindowTitle("Spoonfeed")
         self.setMinimumSize(720, 360)
         self._build_layout()
@@ -535,6 +567,25 @@ class SpoonfeedWindow(QMainWindow):
         now_button = QPushButton("Now")
         now_button.clicked.connect(self.use_current_time_view)
         view_bar.addWidget(now_button)
+        view_bar.addWidget(QLabel("Energy"))
+        self.energy_filter_group = QButtonGroup(self)
+        self.energy_filter_group.setExclusive(True)
+        self.energy_filter_buttons: dict[Optional[bool], QToolButton] = {}
+        for label, value, object_name in (
+            ("All", None, "energy-filter-all"),
+            ("Low energy", True, "energy-filter-low"),
+            ("Other tasks", False, "energy-filter-other"),
+        ):
+            button = QToolButton()
+            button.setObjectName(object_name)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setToolTip(f"Show {label.lower()} tasks")
+            button.clicked.connect(lambda _checked=False, selected=value: self.set_energy_filter(selected))
+            self.energy_filter_group.addButton(button)
+            self.energy_filter_buttons[value] = button
+            view_bar.addWidget(button)
+        self.energy_filter_buttons[None].setChecked(True)
         self.show_successors_input = QCheckBox("Show successor tasks")
         self.show_successors_input.toggled.connect(lambda _value: self.refresh())
         view_bar.addWidget(self.show_successors_input)
@@ -578,7 +629,7 @@ class SpoonfeedWindow(QMainWindow):
         self.check_off_player.play()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Provide app-wide N, D, and Shift behavior without stealing text input."""
+        """Provide task shortcuts without stealing text input from a dialog."""
         if event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
             modifiers = event.modifiers()
             has_command = bool(modifiers & (Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier))
@@ -593,9 +644,18 @@ class SpoonfeedWindow(QMainWindow):
             if event.key() == Qt.Key.Key_T and self._can_open_new_task():
                 self.open_completed_history()
                 return True
+            if event.key() == Qt.Key.Key_H and self._can_open_new_task():
+                self.toggle_energy_filter(False)
+                return True
+            if event.key() == Qt.Key.Key_L and self._can_open_new_task():
+                self.toggle_energy_filter(True)
+                return True
             if event.key() == Qt.Key.Key_Shift and not self.shift_held:
                 self.shift_held = True
                 self.refresh()
+            elif event.key() == Qt.Key.Key_M and self._can_open_new_task():
+                self.open_create(low_energy=True)
+                return True
             elif event.key() == Qt.Key.Key_N and self._can_open_new_task():
                 self.open_create()
                 return True
@@ -714,6 +774,7 @@ class SpoonfeedWindow(QMainWindow):
                 self._view_as_of_time(),
                 show_successors=self.show_successors_input.isChecked(),
                 recent_closed_since=recent_since,
+                low_energy=self.energy_filter,
             )
             if task.is_active
         }
@@ -730,6 +791,7 @@ class SpoonfeedWindow(QMainWindow):
             point_in_time,
             show_successors=self.show_successors_input.isChecked(),
             recent_closed_since=recent_since,
+            low_energy=self.energy_filter,
         )
         predecessor_titles: dict[int, str] = {}
         successor_titles: dict[int, list[str]] = {}
@@ -801,23 +863,35 @@ class SpoonfeedWindow(QMainWindow):
         self.refresh()
         self._schedule_daily_star_reset()
 
-    def open_create(self, parent_task: Optional[Task] = None) -> None:
+    def set_energy_filter(self, low_energy: Optional[bool]) -> None:
+        """Choose the all, low-energy, or other-tasks home-screen view."""
+        self.energy_filter = low_energy
+        self.energy_filter_buttons[low_energy].setChecked(True)
+        self.refresh()
+
+    def toggle_energy_filter(self, low_energy: bool) -> None:
+        """Select a hotkey's category, or clear it when pressed a second time."""
+        self.set_energy_filter(None if self.energy_filter is low_energy else low_energy)
+
+    def open_create(self, parent_task: Optional[Task] = None, *, low_energy: bool = False) -> None:
         visible_ids = self._visible_relationship_task_ids()
         dialog = TaskDialog(
             self,
             parent_choices=[task for task in self.store.list_parent_candidates() if task.id in visible_ids],
             predecessor_choices=[task for task in self.store.list_predecessor_candidates() if task.id in visible_ids],
             selected_parent_id=parent_task.id if parent_task is not None else None,
+            low_energy=low_energy,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             try:
-                title, notes, defer_at, interval_seconds, repeat_start_at, parent_id, predecessor_id, due_at = dialog.values()
+                title, notes, defer_at, interval_seconds, repeat_start_at, parent_id, predecessor_id, due_at, is_low_energy = dialog.values()
                 self.store.create_task(
                     title,
                     notes,
                     defer_at,
                     repeat_interval_seconds=interval_seconds,
                     repeat_start_at=repeat_start_at,
+                    low_energy=is_low_energy,
                     parent_id=parent_id,
                     predecessor_id=predecessor_id,
                     due_at=due_at,
@@ -837,7 +911,7 @@ class SpoonfeedWindow(QMainWindow):
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             try:
-                title, notes, defer_at, interval_seconds, repeat_start_at, parent_id, predecessor_id, due_at = dialog.values()
+                title, notes, defer_at, interval_seconds, repeat_start_at, parent_id, predecessor_id, due_at, is_low_energy = dialog.values()
                 # Updating any virtual occurrence writes the shared series row,
                 # so every occurrence reflects the edited title and schedule.
                 self.store.update_task(
@@ -847,6 +921,7 @@ class SpoonfeedWindow(QMainWindow):
                     defer_at,
                     repeat_interval_seconds=interval_seconds,
                     repeat_start_at=repeat_start_at,
+                    low_energy=is_low_energy,
                     parent_id=parent_id,
                     predecessor_id=predecessor_id,
                     due_at=due_at,

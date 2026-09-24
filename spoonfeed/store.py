@@ -52,6 +52,9 @@ class Task:
     occurrence_predecessor_at: Optional[datetime] = None
     # Daily stars are presentation state rather than a permanent task property.
     starred: bool = False
+    # Low-energy status is durable task metadata and applies to every instance
+    # of a repeating series.
+    low_energy: bool = False
     parent_id: Optional[int] = None
     depth: int = 0
     hidden_child_count: int = 0
@@ -99,6 +102,7 @@ class TaskStore:
                 defer_at TEXT NOT NULL,
                 completed_at TEXT,
                 deleted_at TEXT,
+                low_energy INTEGER NOT NULL DEFAULT 0 CHECK(low_energy IN (0, 1)),
                 repeat_interval_seconds INTEGER,
                 repeat_start_at TEXT,
                 parent_id INTEGER REFERENCES tasks(id),
@@ -120,6 +124,10 @@ class TaskStore:
             self.connection.execute("ALTER TABLE tasks ADD COLUMN predecessor_id INTEGER REFERENCES tasks(id)")
         if "due_at" not in columns:
             self.connection.execute("ALTER TABLE tasks ADD COLUMN due_at TEXT")
+        if "low_energy" not in columns:
+            # Additive migration keeps existing tasks in the neutral-energy
+            # category rather than unexpectedly tinting or filtering them.
+            self.connection.execute("ALTER TABLE tasks ADD COLUMN low_energy INTEGER NOT NULL DEFAULT 0")
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS completed_occurrences (
@@ -183,6 +191,7 @@ class TaskStore:
         created_at: Optional[datetime] = None,
         repeat_interval_seconds: Optional[int] = None,
         repeat_start_at: Optional[datetime] = None,
+        low_energy: bool = False,
         parent_id: Optional[int] = None,
         predecessor_id: Optional[int] = None,
         due_at: Optional[datetime] = None,
@@ -204,14 +213,15 @@ class TaskStore:
         self._validate_deferral(visible_after, due_at)
         cursor = self.connection.execute(
             """
-            INSERT INTO tasks(title, notes, created_at, defer_at, repeat_interval_seconds, repeat_start_at, parent_id, predecessor_id, due_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks(title, notes, created_at, defer_at, low_energy, repeat_interval_seconds, repeat_start_at, parent_id, predecessor_id, due_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 cleaned_title,
                 notes,
                 to_storage(created),
                 to_storage(visible_after),
+                int(low_energy),
                 repeat_interval_seconds,
                 to_storage(repeat_start_at) if repeat_start_at is not None else None,
                 parent_id,
@@ -236,8 +246,9 @@ class TaskStore:
         *,
         show_successors: bool = False,
         recent_closed_since: Optional[datetime] = None,
+        low_energy: Optional[bool] = None,
     ) -> list[Task]:
-        """List tasks for an as-of view, with optional blocked/closed records."""
+        """List tasks for an as-of view, optionally restricted by energy level."""
         point_in_time = now or utc_now()
         stamp = to_storage(point_in_time)
         active_at_point = "(completed_at IS NULL OR completed_at > ?) AND (deleted_at IS NULL OR deleted_at > ?)"
@@ -287,6 +298,8 @@ class TaskStore:
                 (to_storage(recent_closed_since), stamp, to_storage(recent_closed_since), stamp),
             ).fetchall()
             visible.extend(self._task_from_row(row) for row in closed_rows)
+        if low_energy is not None:
+            visible = [task for task in visible if task.low_energy is low_energy]
         return self._with_daily_stars(visible)
 
     def toggle_star(
@@ -422,12 +435,14 @@ class TaskStore:
         *,
         repeat_interval_seconds: Optional[int] = None,
         repeat_start_at: Optional[datetime] = None,
+        low_energy: Optional[bool] = None,
         parent_id: Optional[int] = None,
         predecessor_id: Optional[int] = None,
         due_at: Optional[datetime] = None,
     ) -> Task:
         """Update an active task or every virtual task in a recurring series."""
         before = self._snapshot()
+        current = self.get_task(task_id)
         cleaned_title = title.strip()
         if not cleaned_title:
             raise ValueError("A task needs a name")
@@ -441,7 +456,7 @@ class TaskStore:
         result = self.connection.execute(
             """
             UPDATE tasks
-            SET title = ?, notes = ?, defer_at = ?,
+            SET title = ?, notes = ?, defer_at = ?, low_energy = ?,
                 repeat_interval_seconds = ?, repeat_start_at = ?
                 , parent_id = ?, predecessor_id = ?, due_at = ?
             WHERE id = ? AND completed_at IS NULL AND deleted_at IS NULL
@@ -450,6 +465,7 @@ class TaskStore:
                 cleaned_title,
                 notes,
                 to_storage(visible_after),
+                int(current.low_energy if low_energy is None else low_energy),
                 repeat_interval_seconds,
                 to_storage(repeat_start_at) if repeat_start_at is not None else None,
                 parent_id,
@@ -896,6 +912,7 @@ class TaskStore:
             defer_at=from_storage(row["defer_at"]),  # type: ignore[arg-type]
             completed_at=from_storage(row["completed_at"]),
             deleted_at=from_storage(row["deleted_at"]),
+            low_energy=bool(row["low_energy"]),
             repeat_interval_seconds=row["repeat_interval_seconds"],
             repeat_start_at=from_storage(row["repeat_start_at"]),
             parent_id=row["parent_id"],
