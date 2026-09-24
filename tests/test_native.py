@@ -9,7 +9,7 @@ import unittest
 # Must be selected before Qt creates its single QApplication instance.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QToolButton
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QToolButton
 from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtGui import QPalette, QPixmap
 from PySide6.QtTest import QTest
@@ -107,6 +107,51 @@ class NativeWindowTests(unittest.TestCase):
             QTest.keyClick(window, Qt.Key.Key_M)
             self.application.processEvents()
             self.assertEqual(calls, [True])
+            window.close()
+
+    def test_repeating_delete_controls_target_an_occurrence_or_the_full_series(self) -> None:
+        with TemporaryDirectory() as directory:
+            window = SpoonfeedWindow(Path(directory) / "tasks.db")
+            now = utc_now()
+            series = window.store.create_task(
+                "Recurring",
+                repeat_interval_seconds=3_600,
+                repeat_start_at=now - timedelta(hours=2),
+                created_at=now - timedelta(hours=3),
+            )
+            occurrence = window.store.list_visible(now)[0]
+            window.shift_held = True
+            window.refresh()
+            row_buttons = [
+                button.text()
+                for row in self._visible_rows(window)
+                for button in row.findChildren(QPushButton)
+            ]
+            self.assertIn("Delete occurrence", row_buttons)
+
+            edit_dialog = TaskDialog(window, occurrence)
+            delete_series = edit_dialog.findChild(QPushButton, "delete-series")
+            self.assertIsNotNone(delete_series)
+            self.assertEqual(delete_series.text(), "Delete entire series")  # type: ignore[union-attr]
+
+            window.close_task(occurrence)
+            self.assertTrue(window.store.get_task(series.id).is_active)
+            self.assertEqual(
+                [task.occurrence_at for task in window.store.list_visible(utc_now())],
+                [occurrence.occurrence_at + timedelta(hours=1)],
+            )
+
+            class DeleteSeriesDialog:
+                delete_series_requested = True
+
+                @staticmethod
+                def exec() -> QDialog.DialogCode:
+                    return QDialog.DialogCode.Accepted
+
+            next_occurrence = window.store.list_visible(utc_now())[0]
+            with patch("spoonfeed.native.TaskDialog", return_value=DeleteSeriesDialog()):
+                window.open_edit(next_occurrence)
+            self.assertFalse(window.store.get_task(series.id).is_active)
             window.close()
 
     @staticmethod

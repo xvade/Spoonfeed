@@ -45,6 +45,10 @@
 - Consecutive repeating occurrences now form an implicit predecessor chain:
   only the next incomplete occurrence shows normally; Show successor tasks
   reveals later occurrences and marks their previous-occurrence dependency.
+- Shift-delete now removes only the selected repeating occurrence and unblocks
+  the next one. The recurring-task edit dialog has **Delete entire series** for
+  the separate full-series action; occurrence deletions support undo/redo and
+  appear in the recently-closed view.
 - Added daily stars at the left of active task rows. A click changes an outline
   to yellow for the current local date; a midnight timer refreshes the UI to
   reset them, and repeating occurrences keep independent star state.

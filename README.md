@@ -86,8 +86,9 @@ repeat intervals if their old application used a different time unit.
 - **+1 hour** defers the task by an hour. Hold Shift to make it defer until the
   next local midnight.
 - In the task form, select **Repeat task** to set an interval and repeat start.
-  Each due occurrence appears separately; completing one completes only that
-  occurrence, while editing or deleting any occurrence changes the whole series.
+  Each due occurrence appears separately; completing or Shift-deleting one
+  affects only that occurrence. Editing any occurrence changes the shared
+  series, and its edit dialog provides **Delete entire series** when needed.
 - Choose a **Parent task** to make a nested subtask. Parents cannot be completed
   or deleted until all descendants are closed; hidden active children are shown
   as a count below the visible child block.

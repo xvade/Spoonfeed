@@ -14,6 +14,10 @@ import sqlite3
 from typing import Optional
 
 
+SnapshotTable = tuple[tuple[object, ...], ...]
+Snapshot = tuple[SnapshotTable, SnapshotTable, SnapshotTable, SnapshotTable, SnapshotTable]
+
+
 def utc_now() -> datetime:
     """Return an aware UTC timestamp, suitable for unambiguous persistence."""
     return datetime.now(timezone.utc)
@@ -140,6 +144,16 @@ class TaskStore:
         )
         self.connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS deleted_occurrences (
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                occurrence_at TEXT NOT NULL,
+                deleted_at TEXT NOT NULL,
+                PRIMARY KEY(task_id, occurrence_at)
+            )
+            """
+        )
+        self.connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS deferred_occurrences (
                 task_id INTEGER NOT NULL REFERENCES tasks(id),
                 occurrence_at TEXT NOT NULL,
@@ -169,6 +183,10 @@ class TaskStore:
         self.connection.execute(
             "CREATE INDEX IF NOT EXISTS completed_occurrences_completed_index "
             "ON completed_occurrences(completed_at)"
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS deleted_occurrences_deleted_index "
+            "ON deleted_occurrences(deleted_at)"
         )
         self.connection.execute(
             "CREATE INDEX IF NOT EXISTS deferred_occurrences_defer_index "
@@ -298,6 +316,32 @@ class TaskStore:
                 (to_storage(recent_closed_since), stamp, to_storage(recent_closed_since), stamp),
             ).fetchall()
             visible.extend(self._task_from_row(row) for row in closed_rows)
+            deleted_occurrence_rows = self.connection.execute(
+                """
+                SELECT tasks.*, deleted_occurrences.occurrence_at AS occurrence_at,
+                       deleted_occurrences.deleted_at AS occurrence_deleted_at
+                FROM deleted_occurrences
+                JOIN tasks ON tasks.id = deleted_occurrences.task_id
+                WHERE deleted_occurrences.deleted_at >= ?
+                  AND deleted_occurrences.deleted_at <= ?
+                  AND tasks.deleted_at IS NULL
+                ORDER BY deleted_occurrences.deleted_at DESC, tasks.id DESC
+                """,
+                (to_storage(recent_closed_since), stamp),
+            ).fetchall()
+            for row in deleted_occurrence_rows:
+                series = self._task_from_row(row)
+                occurrence_at = from_storage(row["occurrence_at"])
+                deleted_at = from_storage(row["occurrence_deleted_at"])
+                if occurrence_at is not None and deleted_at is not None:
+                    visible.append(
+                        replace(
+                            series,
+                            defer_at=occurrence_at,
+                            occurrence_at=occurrence_at,
+                            deleted_at=deleted_at,
+                        )
+                    )
         if low_energy is not None:
             visible = [task for task in visible if task.low_energy is low_energy]
         return self._with_daily_stars(visible)
@@ -493,6 +537,11 @@ class TaskStore:
         if task.is_repeating:
             if occurrence_at is None:
                 raise ValueError("A repeating task needs an occurrence time to be completed")
+            if self.connection.execute(
+                "SELECT 1 FROM deleted_occurrences WHERE task_id = ? AND occurrence_at = ?",
+                (task_id, to_storage(occurrence_at)),
+            ).fetchone() is not None:
+                raise ValueError("Only active occurrences can be completed")
             completed_at = at or utc_now()
             self.connection.execute(
                 """
@@ -515,12 +564,43 @@ class TaskStore:
         return closed
 
     def delete_task(self, task_id: int, at: Optional[datetime] = None) -> Task:
-        """Mark a task deleted without erasing its record."""
+        """Mark a whole task or repeating series deleted without erasing it."""
         before = self._snapshot()
         self._ensure_children_closed(task_id)
         deleted = self._close_task(task_id, "deleted_at", at or utc_now())
         self._record_action(before)
         return deleted
+
+    def delete_occurrence(self, task_id: int, occurrence_at: datetime, at: Optional[datetime] = None) -> Task:
+        """Delete one active repeating occurrence while leaving its series intact."""
+        before = self._snapshot()
+        task = self.get_task(task_id)
+        if not task.is_active or not task.is_repeating:
+            raise ValueError("Only active repeating occurrences can be deleted")
+        occurrence_key = to_storage(occurrence_at)
+        already_closed = self.connection.execute(
+            """
+            SELECT 1 FROM completed_occurrences WHERE task_id = ? AND occurrence_at = ?
+            UNION ALL
+            SELECT 1 FROM deleted_occurrences WHERE task_id = ? AND occurrence_at = ?
+            """,
+            (task_id, occurrence_key, task_id, occurrence_key),
+        ).fetchone()
+        if already_closed is not None:
+            raise ValueError("Only active repeating occurrences can be deleted")
+        deleted_at = at or utc_now()
+        self.connection.execute(
+            "INSERT INTO deleted_occurrences(task_id, occurrence_at, deleted_at) VALUES (?, ?, ?)",
+            (task_id, occurrence_key, to_storage(deleted_at)),
+        )
+        # A removed occurrence should not keep a stale display-time override.
+        self.connection.execute(
+            "DELETE FROM deferred_occurrences WHERE task_id = ? AND occurrence_at = ?",
+            (task_id, occurrence_key),
+        )
+        self.connection.commit()
+        self._record_action(before)
+        return replace(task, defer_at=occurrence_at, occurrence_at=occurrence_at, deleted_at=deleted_at)
 
     def defer_task(self, task_id: int, until: datetime, *, occurrence_at: Optional[datetime] = None) -> Task:
         """Hide a task or move one repeating occurrence's display time."""
@@ -629,14 +709,16 @@ class TaskStore:
         if any(due is not None and until >= due for due in due_dates):
             raise ValueError("Cannot defer a task until or past an affected due date")
 
-    def _snapshot(self) -> tuple[
-        tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]
-    ]:
+    def _snapshot(self) -> Snapshot:
         """Capture mutable task tables for in-session undo/redo restoration."""
         tasks = tuple(tuple(row) for row in self.connection.execute("SELECT * FROM tasks ORDER BY id"))
         occurrences = tuple(
             tuple(row)
             for row in self.connection.execute("SELECT * FROM completed_occurrences ORDER BY task_id, occurrence_at")
+        )
+        deleted_occurrences = tuple(
+            tuple(row)
+            for row in self.connection.execute("SELECT * FROM deleted_occurrences ORDER BY task_id, occurrence_at")
         )
         deferred_occurrences = tuple(
             tuple(row)
@@ -646,24 +728,21 @@ class TaskStore:
             tuple(row)
             for row in self.connection.execute("SELECT * FROM daily_task_stars ORDER BY task_id, occurrence_at")
         )
-        return tasks, occurrences, deferred_occurrences, daily_stars
+        return tasks, occurrences, deleted_occurrences, deferred_occurrences, daily_stars
 
-    def _record_action(
-        self, before: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]
-    ) -> None:
+    def _record_action(self, before: Snapshot) -> None:
         """Store a completed mutation and invalidate redo after a divergent action."""
         after = self._snapshot()
         if after != before:
             self._undo_stack.append((before, after))
             self._redo_stack.clear()
 
-    def _restore_snapshot(
-        self, snapshot: tuple[tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]
-    ) -> None:
+    def _restore_snapshot(self, snapshot: Snapshot) -> None:
         """Replace mutable tables with a prior snapshot while honoring self FKs."""
-        tasks, occurrences, deferred_occurrences, daily_stars = snapshot
+        tasks, occurrences, deleted_occurrences, deferred_occurrences, daily_stars = snapshot
         self.connection.execute("PRAGMA defer_foreign_keys = ON")
         self.connection.execute("DELETE FROM completed_occurrences")
+        self.connection.execute("DELETE FROM deleted_occurrences")
         self.connection.execute("DELETE FROM deferred_occurrences")
         self.connection.execute("DELETE FROM daily_task_stars")
         self.connection.execute("DELETE FROM tasks")
@@ -672,6 +751,8 @@ class TaskStore:
             self.connection.executemany(f"INSERT INTO tasks VALUES ({placeholders})", tasks)
         if occurrences:
             self.connection.executemany("INSERT INTO completed_occurrences VALUES (?, ?, ?)", occurrences)
+        if deleted_occurrences:
+            self.connection.executemany("INSERT INTO deleted_occurrences VALUES (?, ?, ?)", deleted_occurrences)
         if deferred_occurrences:
             self.connection.executemany("INSERT INTO deferred_occurrences VALUES (?, ?, ?)", deferred_occurrences)
         if daily_stars:
@@ -699,6 +780,11 @@ class TaskStore:
             (task.id,),
         ).fetchall()
         completed = {row["occurrence_at"] for row in completed_rows}
+        deleted_rows = self.connection.execute(
+            "SELECT occurrence_at, deleted_at FROM deleted_occurrences WHERE task_id = ?",
+            (task.id,),
+        ).fetchall()
+        deleted = {row["occurrence_at"]: from_storage(row["deleted_at"]) for row in deleted_rows}
         deferred_rows = self.connection.execute(
             "SELECT occurrence_at, defer_at FROM deferred_occurrences WHERE task_id = ?",
             (task.id,),
@@ -709,14 +795,16 @@ class TaskStore:
         for index in range(last_index + 1):
             occurrence_at = task.repeat_start_at + timedelta(seconds=task.repeat_interval_seconds * index)
             occurrence_key = to_storage(occurrence_at)
-            if occurrence_key in completed:
+            deleted_at = deleted.get(occurrence_key)
+            if occurrence_key in completed or (deleted_at is not None and deleted_at <= now):
                 previous_occurrence_at = occurrence_at
                 continue
             display_at = deferred.get(occurrence_key, occurrence_at)
-            predecessor_is_complete = (
-                previous_occurrence_at is None or to_storage(previous_occurrence_at) in completed
+            previous_key = to_storage(previous_occurrence_at) if previous_occurrence_at is not None else None
+            predecessor_is_closed = previous_key is None or previous_key in completed or (
+                deleted.get(previous_key) is not None and deleted[previous_key] <= now
             )
-            if display_at is not None and display_at <= now and (show_successors or predecessor_is_complete):
+            if display_at is not None and display_at <= now and (show_successors or predecessor_is_closed):
                 occurrences.append(
                     replace(
                         task,
@@ -739,6 +827,11 @@ class TaskStore:
             (task.id,),
         ).fetchall()
         completed = {row["occurrence_at"] for row in completed_rows}
+        deleted_rows = self.connection.execute(
+            "SELECT occurrence_at FROM deleted_occurrences WHERE task_id = ?",
+            (task.id,),
+        ).fetchall()
+        deleted = {row["occurrence_at"] for row in deleted_rows}
         deferred_rows = self.connection.execute(
             "SELECT occurrence_at, defer_at FROM deferred_occurrences WHERE task_id = ?",
             (task.id,),
@@ -747,14 +840,14 @@ class TaskStore:
         delayed_candidates = [
             display_at
             for occurrence_key, display_at in deferred.items()
-            if occurrence_key not in completed and display_at is not None and display_at > now
+            if occurrence_key not in completed and occurrence_key not in deleted and display_at is not None and display_at > now
         ]
         # The next occurrence is normally the next index. A completed row can
         # exist only when an old schedule was edited, so keep searching safely.
         while True:
             candidate = task.repeat_start_at + timedelta(seconds=task.repeat_interval_seconds * next_index)
             candidate_key = to_storage(candidate)
-            if candidate_key not in completed and candidate_key not in deferred:
+            if candidate_key not in completed and candidate_key not in deleted and candidate_key not in deferred:
                 scheduled_candidate = candidate
                 break
             next_index += 1

@@ -198,6 +198,33 @@ class TaskStoreTests(unittest.TestCase):
         remaining = self.store.list_visible(NOW)
         self.assertEqual([task.occurrence_at for task in remaining], [NOW - timedelta(hours=1)])
 
+    def test_deleting_a_repeating_occurrence_keeps_the_series_and_unblocks_the_next(self) -> None:
+        series = self.store.create_task(
+            "Medication",
+            repeat_interval_seconds=3_600,
+            repeat_start_at=NOW - timedelta(hours=2),
+            created_at=NOW - timedelta(hours=3),
+        )
+        first = self.store.list_visible(NOW)[0]
+
+        deleted = self.store.delete_occurrence(series.id, first.occurrence_at, at=NOW)
+        self.assertEqual(deleted.deleted_at, NOW)
+        self.assertTrue(self.store.get_task(series.id).is_active)
+        self.assertEqual(
+            [task.occurrence_at for task in self.store.list_visible(NOW)],
+            [NOW - timedelta(hours=1)],
+        )
+        recent = self.store.list_visible(NOW, recent_closed_since=NOW - timedelta(minutes=1))
+        self.assertTrue(any(task.occurrence_at == first.occurrence_at and task.deleted_at == NOW for task in recent))
+
+        self.assertTrue(self.store.undo())
+        self.assertEqual([task.occurrence_at for task in self.store.list_visible(NOW)], [first.occurrence_at])
+        self.assertTrue(self.store.redo())
+        self.assertEqual([task.occurrence_at for task in self.store.list_visible(NOW)], [NOW - timedelta(hours=1)])
+
+        self.store.delete_task(series.id, NOW)
+        self.assertEqual(self.store.list_visible(NOW), [])
+
     def test_deferring_one_repeating_occurrence_preserves_the_series_schedule(self) -> None:
         series = self.store.create_task(
             "Water plants",

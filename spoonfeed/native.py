@@ -84,6 +84,7 @@ class TaskDialog(QDialog):
         self.setWindowTitle("New task" if task is None else "Edit task")
         self.setModal(True)
         self.setMinimumWidth(460)
+        self.delete_series_requested = False
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Task name"))
@@ -186,6 +187,12 @@ class TaskDialog(QDialog):
             self.repeat_start_input.setDateTime(QDateTime.fromSecsSinceEpoch(int(start.timestamp())))
         self._toggle_repeat_fields(self.repeat_checkbox.isChecked())
 
+        if task is not None and task.is_repeating:
+            delete_series = QPushButton("Delete entire series")
+            delete_series.setObjectName("delete-series")
+            delete_series.setToolTip("Delete every occurrence of this repeating task")
+            delete_series.clicked.connect(self._request_series_deletion)
+            layout.addWidget(delete_series)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
@@ -197,6 +204,11 @@ class TaskDialog(QDialog):
         if not self.title_input.text().strip():
             QMessageBox.warning(self, "Could not save task", "A task needs a name")
             return
+        super().accept()
+
+    def _request_series_deletion(self) -> None:
+        """Close the dialog with an explicit request to delete the full series."""
+        self.delete_series_requested = True
         super().accept()
 
     def _set_repeat_interval(self, seconds: int) -> None:
@@ -356,7 +368,7 @@ class TaskRow(QFrame):
             layout.addWidget(status)
             return
 
-        close = QPushButton("Delete" if shift_held else "Complete")
+        close = QPushButton("Delete occurrence" if shift_held and task.is_repeating else "Delete" if shift_held else "Complete")
         close.clicked.connect(lambda: on_close(task))
         layout.addWidget(close)
         if task.is_repeating:
@@ -910,6 +922,10 @@ class SpoonfeedWindow(QMainWindow):
             predecessor_choices=[candidate for candidate in self.store.list_predecessor_candidates(task.id) if candidate.id in visible_ids],
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            if dialog.delete_series_requested:
+                self.store.delete_task(task.id)
+                self.refresh()
+                return
             try:
                 title, notes, defer_at, interval_seconds, repeat_start_at, parent_id, predecessor_id, due_at, is_low_energy = dialog.values()
                 # Updating any virtual occurrence writes the shared series row,
@@ -933,7 +949,10 @@ class SpoonfeedWindow(QMainWindow):
 
     def close_task(self, task: Task) -> None:
         if self.shift_held:
-            self.store.delete_task(task.id)
+            if task.is_repeating and task.occurrence_at is not None:
+                self.store.delete_occurrence(task.id, task.occurrence_at)
+            else:
+                self.store.delete_task(task.id)
         else:
             self.store.complete_task(task.id, occurrence_at=task.occurrence_at)
             self.play_check_off_sound()
